@@ -1,0 +1,16 @@
+{
+  "name": "story-magician",
+  "version": "1.0.0",
+  "description": "故事魔法师 —— 面向3-6岁幼儿的绘本创编伙伴智能体（故事接龙 + 文生图 + 文生视频 + 图文小书）",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2"
+  }
+}

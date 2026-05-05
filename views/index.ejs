@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %></title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <span class="header-icon">✨</span>
+      <h1 class="header-title">故事魔法师</h1>
+      <span class="header-sub">3-6岁绘本创编伙伴</span>
+      <span class="age-badge hidden" id="ageBadge"></span>
+    </div>
+    <button id="historyBtn" class="btn-history">📚 历史 <span id="historyCount" class="history-badge"></span></button>
+  </header>
+
+  <!-- Phase progress bar -->
+  <div class="phase-bar" id="phaseBar">
+    <div class="phase-step active" id="phaseStep1" data-phase="1">
+      <span class="phase-dot"></span><span class="phase-label">灵感唤醒</span>
+    </div>
+    <div class="phase-arrow">›</div>
+    <div class="phase-step" id="phaseStep2" data-phase="2">
+      <span class="phase-dot"></span><span class="phase-label">感官细节</span>
+    </div>
+    <div class="phase-arrow">›</div>
+    <div class="phase-step" id="phaseStep3" data-phase="3">
+      <span class="phase-dot"></span><span class="phase-label">逻辑挑战</span>
+    </div>
+    <div class="phase-arrow">›</div>
+    <div class="phase-step" id="phaseStep4" data-phase="4">
+      <span class="phase-dot"></span><span class="phase-label">情绪反思</span>
+    </div>
+  </div>
+
+  <!-- Main layout -->
+  <main class="main">
+    <section class="chat-panel" id="chatPanel">
+      <div class="chat-messages" id="chatMessages">
+        <!-- Opening message -->
+        <div class="msg msg-assistant">
+          <div class="msg-avatar">🧙</div>
+          <div class="msg-bubble"><%= opening %></div>
+        </div>
+      </div>
+
+      <!-- Input area -->
+      <div class="chat-input-wrap" id="inputArea">
+        <button id="micBtn" class="btn-mic" aria-label="语音输入" title="语音输入">🎤</button>
+        <textarea
+          id="userInput"
+          class="chat-input"
+          placeholder="小朋友，说说你的故事…"
+          rows="2"
+          maxlength="200"
+        ></textarea>
+        <button id="sendBtn" class="btn-send" aria-label="发送">
+          <span class="send-icon">🚀</span>
+        </button>
+      </div>
+
+      <!-- Action bar -->
+      <div class="action-bar" id="actionBar">
+        <button id="bookBtn" class="btn-book hidden">
+          📖 制作魔法小书
+        </button>
+        <button id="reportBtn" class="btn-report hidden">
+          🌟 能力报告
+        </button>
+        <button id="ttsBtn" class="btn-tts" title="关闭语音播报">🔊 语音</button>
+        <button id="resetBtn" class="btn-reset">🔄 重新开始</button>
+      </div>
+    </section>
+
+    <!-- Visual panel: images & videos -->
+    <aside class="visual-panel" id="visualPanel">
+      <div class="visual-header">
+        <span>🎨 魔法画廊</span>
+      </div>
+      <div class="visual-gallery" id="gallery">
+        <div class="gallery-empty">
+          <p>🌈 故事越精彩</p>
+          <p>画面越美丽！</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- History drawer -->
+  <div class="history-overlay hidden" id="historyOverlay">
+    <aside class="history-drawer">
+      <div class="history-drawer-header">
+        <span>📚 历史故事</span>
+        <button class="history-close" id="historyClose">✕</button>
+      </div>
+      <div class="history-list" id="historyList">
+        <div class="history-empty">暂无历史故事</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- History view modal -->
+  <div class="modal-backdrop hidden" id="historyViewModal">
+    <div class="modal-content">
+      <button class="modal-close" id="historyViewClose">✕</button>
+      <h2 class="history-view-title" id="historyViewTitle"></h2>
+      <div class="history-view-messages" id="historyViewMessages"></div>
+    </div>
+  </div>
+
+  <!-- Book modal -->
+  <div class="modal-backdrop hidden" id="bookModal">
+    <div class="modal-content book-modal">
+      <button class="modal-close" id="modalClose">✕</button>
+      <h2 class="book-title" id="bookTitle">✨ 我的魔法小书</h2>
+      <div class="book-pages" id="bookPages"></div>
+      <p class="book-closing" id="bookClosing"></p>
+      <button class="btn-print" onclick="window.print()">🖨️ 打印小书</button>
+    </div>
+  </div>
+
+  <!-- Report modal -->
+  <div class="modal-backdrop hidden" id="reportModal">
+    <div class="modal-content report-modal">
+      <button class="modal-close" id="reportModalClose">✕</button>
+      <h2 class="report-title">🌟 小小创作家能力报告</h2>
+      <div class="report-highlights" id="reportHighlights"></div>
+      <div class="report-overall" id="reportOverall"></div>
+      <div class="report-encouragement" id="reportEncouragement"></div>
+    </div>
+  </div>
+
+  <!-- Age selection modal (shown before first interaction) -->
+  <div class="modal-backdrop" id="ageModal">
+    <div class="modal-content age-modal">
+      <div class="age-modal-icon">✨</div>
+      <h2 class="age-modal-title">欢迎来到故事魔法师！</h2>
+      <p class="age-modal-subtitle">小朋友几岁了？</p>
+      <div class="age-buttons">
+        <button class="age-btn" data-age="3-4">
+          <span class="age-btn-num">3–4</span>
+          <span class="age-btn-label">岁</span>
+          <span class="age-btn-hint">简单有趣</span>
+        </button>
+        <button class="age-btn" data-age="4-5">
+          <span class="age-btn-num">4–5</span>
+          <span class="age-btn-label">岁</span>
+          <span class="age-btn-hint">探索故事</span>
+        </button>
+        <button class="age-btn" data-age="5-6">
+          <span class="age-btn-num">5–6</span>
+          <span class="age-btn-label">岁</span>
+          <span class="age-btn-hint">创意无限</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div class="loading-toast hidden" id="loadingToast">
+    <span class="loading-spinner"></span>
+    <span id="loadingText">魔法师正在施法…</span>
+  </div>
+
+  <script>
+    window.__INIT__ = {
+      opening: `<%- opening.replace(/`/g, '\\`') %>`,
+    };
+  </script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
