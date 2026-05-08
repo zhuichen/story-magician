@@ -65,6 +65,7 @@
 
       <!-- Action bar -->
       <div class="action-bar" id="actionBar">
+        <button id="callBtn" class="btn-call" title="开启电话模式">📞 打电话</button>
         <button id="bookBtn" class="btn-book hidden">
           📖 制作魔法小书
         </button>
@@ -164,6 +165,23 @@
   <div class="loading-toast hidden" id="loadingToast">
     <span class="loading-spinner"></span>
     <span id="loadingText">魔法师正在施法…</span>
+  </div>
+
+  <!-- Call mode overlay -->
+  <div class="call-overlay hidden" id="callOverlay">
+    <div class="call-modal">
+      <div class="call-avatar">📞</div>
+      <h2 class="call-title">正在通话中...</h2>
+      <div class="call-status" id="callStatus">请开始说话</div>
+      <div class="call-waveform" id="callWaveform">
+        <span class="wave-bar"></span>
+        <span class="wave-bar"></span>
+        <span class="wave-bar"></span>
+        <span class="wave-bar"></span>
+        <span class="wave-bar"></span>
+      </div>
+      <button class="btn-hang-up" id="hangUpBtn">挂断</button>
+    </div>
   </div>
 
   <script>

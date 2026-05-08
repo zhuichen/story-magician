@@ -11,6 +11,10 @@
   let ttsEnabled = true;
   let isRecording = false;
   let recognition = null;
+  let isCallMode = false;
+  let callRecognition = null;
+  let silenceTimer = null;
+  let isSpeaking = false;
 
   // ── DOM refs ────────────────────────────────────────────────────────────────
   const chatMessages = document.getElementById('chatMessages');
@@ -49,6 +53,12 @@
   const ageModal  = document.getElementById('ageModal');
   const ageBadge  = document.getElementById('ageBadge');
 
+  const callBtn       = document.getElementById('callBtn');
+  const callOverlay   = document.getElementById('callOverlay');
+  const callStatus    = document.getElementById('callStatus');
+  const callWaveform  = document.getElementById('callWaveform');
+  const hangUpBtn     = document.getElementById('hangUpBtn');
+
   // ── Phase progress bar ────────────────────────────────────────────────────
   function updatePhaseBar(phase) {
     for (let i = 1; i <= 4; i++) {
@@ -60,18 +70,56 @@
   }
 
   // ── Voice: TTS ────────────────────────────────────────────────────────────
-  function speakText(html) {
-    if (!ttsEnabled || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
+  async function speakText(html) {
+    if (!ttsEnabled) return;
+
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
     const text = (tmp.textContent || tmp.innerText || '').trim();
     if (!text) return;
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = 'zh-CN';
-    utter.rate = 0.88;
-    utter.pitch = 1.1;
-    window.speechSynthesis.speak(utter);
+
+    // 优先使用火山引擎 TTS（儿童声音）
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+
+      if (res.ok) {
+        const audioBlob = await res.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        audio.play();
+        audio.onended = () => URL.revokeObjectURL(audioUrl);
+        return;
+      }
+    } catch (e) {
+      console.warn('火山 TTS 失败，降级到浏览器 TTS:', e);
+    }
+
+    // 降级：使用浏览器自带 TTS
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'zh-CN';
+      utter.rate = 0.95;
+      utter.pitch = 1.3;
+      utter.volume = 1.0;
+
+      const voices = window.speechSynthesis.getVoices();
+      const preferredVoice = voices.find(v =>
+        v.lang.startsWith('zh') && (
+          v.name.includes('Tingting') ||
+          v.name.includes('Xiaoxiao') ||
+          v.name.includes('Female') ||
+          v.name.includes('女')
+        )
+      );
+      if (preferredVoice) utter.voice = preferredVoice;
+
+      window.speechSynthesis.speak(utter);
+    }
   }
 
   function toggleTTS() {
@@ -113,6 +161,169 @@
     micBtn.classList.remove('recording');
     micBtn.textContent = '🎤';
     try { recognition.stop(); } catch (e) { /* already stopped */ }
+  }
+
+  // ── Call Mode: Continuous Voice Conversation ──────────────────────────────
+  function startCallMode() {
+    if (isCallMode || !sessionId) return;
+
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      alert('您的浏览器不支持语音识别功能');
+      return;
+    }
+
+    isCallMode = true;
+    callOverlay.classList.remove('hidden');
+    callStatus.textContent = '请开始说话...';
+
+    // 初始化持续语音识别
+    callRecognition = new SR();
+    callRecognition.lang = 'zh-CN';
+    callRecognition.continuous = true;
+    callRecognition.interimResults = true;
+    callRecognition.maxAlternatives = 1;
+
+    let finalTranscript = '';
+    let interimTranscript = '';
+
+    callRecognition.onstart = () => {
+      callStatus.textContent = '正在聆听...';
+      startWaveformAnimation();
+    };
+
+    callRecognition.onresult = (e) => {
+      interimTranscript = '';
+
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const transcript = e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      // 显示实时识别结果
+      const displayText = finalTranscript + interimTranscript;
+      if (displayText.trim()) {
+        callStatus.textContent = `"${displayText}"`;
+        isSpeaking = true;
+
+        // 重置静默计时器
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+          if (finalTranscript.trim()) {
+            sendCallMessage(finalTranscript.trim());
+            finalTranscript = '';
+            interimTranscript = '';
+          }
+        }, 1500); // 1.5秒静默后自动发送
+      }
+    };
+
+    callRecognition.onerror = (e) => {
+      console.error('语音识别错误:', e.error);
+      if (e.error === 'no-speech') {
+        callStatus.textContent = '没有听到声音，请说话...';
+      } else if (e.error === 'network') {
+        callStatus.textContent = '网络错误，请检查连接';
+      }
+    };
+
+    callRecognition.onend = () => {
+      if (isCallMode) {
+        // 自动重启识别以保持持续监听
+        try {
+          callRecognition.start();
+        } catch (e) {
+          console.error('重启识别失败:', e);
+        }
+      }
+    };
+
+    try {
+      callRecognition.start();
+    } catch (e) {
+      console.error('启动识别失败:', e);
+      stopCallMode();
+    }
+  }
+
+  function stopCallMode() {
+    if (!isCallMode) return;
+
+    isCallMode = false;
+    isSpeaking = false;
+    clearTimeout(silenceTimer);
+
+    if (callRecognition) {
+      try {
+        callRecognition.stop();
+      } catch (e) {
+        console.error('停止识别失败:', e);
+      }
+      callRecognition = null;
+    }
+
+    stopWaveformAnimation();
+    callOverlay.classList.add('hidden');
+  }
+
+  async function sendCallMessage(text) {
+    if (!text || busy || !sessionId) return;
+
+    callStatus.textContent = '魔法师正在回答...';
+    stopWaveformAnimation();
+
+    appendUserMsg(text);
+    setBusy(true);
+
+    try {
+      const data = await apiFetch('/api/chat', 'POST', { sessionId, input: text });
+      round = data.round || round + 1;
+
+      if (data.phase) updatePhaseBar(data.phase);
+
+      const sanitizeNote = data.sanitized
+        ? '<div class="msg-sanitized">✨ 魔法师把故事变得更美好了</div>'
+        : '';
+
+      const isEmotion = data.action === 'ask_emotion';
+      appendAssistantMsg(data.reply + sanitizeNote, isEmotion ? 'msg-emotion' : '');
+
+      if (round >= 5) bookBtn.classList.remove('hidden');
+      if (round >= 3) reportBtn.classList.remove('hidden');
+
+      if (data.action === 'generate_image' && data.imagePrompt) {
+        await handleImageGeneration(data.imagePrompt, data.scene || text);
+      } else if (data.action === 'generate_video' && data.videoPrompt) {
+        await handleVideoGeneration(data.videoPrompt, data.scene || text);
+      } else if (data.action === 'finalize_book') {
+        bookBtn.classList.remove('hidden');
+      }
+
+      // 等待 TTS 播放完成后再继续监听
+      callStatus.textContent = '请继续说话...';
+      startWaveformAnimation();
+    } catch (e) {
+      appendError(e.message || '出了点小问题，请再试一次！');
+      callStatus.textContent = '出错了，请重试...';
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startWaveformAnimation() {
+    if (callWaveform) {
+      callWaveform.classList.add('active');
+    }
+  }
+
+  function stopWaveformAnimation() {
+    if (callWaveform) {
+      callWaveform.classList.remove('active');
+    }
   }
 
   // ── Age selection ─────────────────────────────────────────────────────────
@@ -735,6 +946,9 @@
   historyViewModal.addEventListener('click', (e) => {
     if (e.target === historyViewModal) historyViewModal.classList.add('hidden');
   });
+
+  callBtn.addEventListener('click', startCallMode);
+  hangUpBtn.addEventListener('click', stopCallMode);
 
   // ── Boot ──────────────────────────────────────────────────────────────────
   updatePhaseBar(1);

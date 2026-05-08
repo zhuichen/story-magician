@@ -8,6 +8,7 @@ const sessionStore = require('../services/sessionStore');
 const imageService = require('../services/imageService');
 const videoService = require('../services/videoService');
 const historyService = require('../services/historyService');
+const ttsService = require('../services/ttsService');
 
 // ============ 页面 ============
 
@@ -270,6 +271,27 @@ router.post('/api/histories/:id/resume', (req, res) => {
     history: s.history,
     scenes: s.scenes,
   });
+});
+
+// ============ 语音合成 ============
+
+router.post('/api/tts', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || !String(text).trim()) {
+      return res.status(400).json({ error: '缺少文本内容' });
+    }
+
+    const audioBuffer = await ttsService.synthesize(text);
+    res.set({
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': audioBuffer.length,
+    });
+    res.send(audioBuffer);
+  } catch (err) {
+    console.error('TTS 失败:', err.message);
+    res.status(500).json({ error: err.message || '语音合成失败' });
+  }
 });
 
 module.exports = router;
