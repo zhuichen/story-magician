@@ -15,6 +15,8 @@ function newSession(ageGroup = '4-5') {
     scenes: [], // { text, imageUrl?, videoUrl? }
     phase: 1,   // 当前创作阶段 1-4
     ageGroup,   // 年龄组 '3-4' | '4-5' | '5-6'
+    emotionRounds: 0,         // 已完成的情绪反思问答轮数（ask_emotion 后孩子给出回答 +1）
+    lastAction: '',           // 上一轮 AI 的 action
   };
   SESSIONS.set(id, session);
   pruneIfNeeded();

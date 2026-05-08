@@ -9,14 +9,12 @@ const imageService = require('../services/imageService');
 const videoService = require('../services/videoService');
 const historyService = require('../services/historyService');
 const ttsService = require('../services/ttsService');
+const sttService = require('../services/sttService');
 
 // ============ 页面 ============
 
 router.get('/', (req, res) => {
-  res.render('index', {
-    title: '故事魔法师',
-    opening: prompts.OPENING,
-  });
+  res.render('index', { title: '故事魔法师' });
 });
 
 // ============ 会话 ============
@@ -25,7 +23,56 @@ router.post('/api/session', (req, res) => {
   const validGroups = ['3-4', '4-5', '5-6'];
   const ageGroup = validGroups.includes(req.body.ageGroup) ? req.body.ageGroup : '4-5';
   const s = sessionStore.newSession(ageGroup);
-  res.json({ sessionId: s.id, opening: prompts.getOpening(ageGroup), ageGroup });
+  res.json({ sessionId: s.id, ageGroup });
+});
+
+// ============ 开场白（流式随机生成） ============
+
+router.post('/api/opening-stream', async (req, res) => {
+  const { sessionId } = req.body;
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (event, data) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const session = sessionStore.getSession(sessionId);
+    if (!session) { send('error', { error: '会话已过期，请刷新页面' }); return res.end(); }
+
+    const messages = prompts.buildOpeningMessages(session.ageGroup || '4-5');
+    let full = '';
+    try {
+      full = await aiService.chatStream(
+        messages,
+        { temperature: 1.0, maxTokens: 200 },
+        (delta) => send('delta', { text: delta })
+      );
+    } catch (e) {
+      // AI 失败时降级到内置开场白
+      const fallback = prompts.getOpening(session.ageGroup || '4-5');
+      send('delta', { text: fallback });
+      full = fallback;
+    }
+
+    const opening = String(full).trim().slice(0, 200);
+    session.history.push({ role: 'assistant', content: opening });
+    sessionStore.touch(sessionId);
+    historyService.saveHistory(session);
+
+    send('done', { opening });
+    res.end();
+  } catch (err) {
+    console.error('opening-stream 失败:', err.message);
+    send('error', { error: err.message || '开场白生成失败' });
+    res.end();
+  }
 });
 
 // ============ 对话接龙 ============
@@ -97,26 +144,196 @@ router.post('/api/chat', async (req, res) => {
   }
 });
 
+// ============ 对话接龙（流式） ============
+
+/**
+ * 从流式 JSON 文本中实时抽取 `reply` 字段的字符。
+ * 仅支持顶层 reply 字符串（与系统提示词约定一致）。
+ */
+function makeReplyExtractor() {
+  let buf = '';
+  let started = false;       // 已找到 "reply" 的开始引号
+  let finished = false;      // 已找到 reply 的结束引号
+  let escape = false;        // 上一个字符是反斜杠
+  let cursor = 0;            // 在 buf 中的扫描位置
+
+  return function pump(chunk) {
+    buf += chunk;
+    let out = '';
+
+    if (!started) {
+      const m = buf.slice(cursor).match(/"reply"\s*:\s*"/);
+      if (!m) return out;
+      cursor += m.index + m[0].length;
+      started = true;
+    }
+
+    if (finished) return out;
+
+    while (cursor < buf.length) {
+      const ch = buf[cursor++];
+      if (escape) {
+        // 简化处理常见转义
+        if (ch === 'n') out += '\n';
+        else if (ch === 't') out += '\t';
+        else if (ch === 'r') out += '\r';
+        else out += ch;
+        escape = false;
+      } else if (ch === '\\') {
+        escape = true;
+      } else if (ch === '"') {
+        finished = true;
+        break;
+      } else {
+        out += ch;
+      }
+    }
+    return out;
+  };
+}
+
+router.post('/api/chat-stream', async (req, res) => {
+  const { sessionId, input } = req.body;
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (event, data) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    if (!sessionId) { send('error', { error: '缺少 sessionId' }); return res.end(); }
+    if (!input || !String(input).trim()) {
+      send('error', { error: '小朋友还没说话呀' });
+      return res.end();
+    }
+    const session = sessionStore.getSession(sessionId);
+    if (!session) { send('error', { error: '会话已过期，请刷新页面' }); return res.end(); }
+
+    const { text: safeInput, replaced } = safety.sanitize(input);
+    const messages = prompts.buildMessages(session.history, safeInput, session.phase || 1, session.ageGroup || '4-5');
+
+    const extractReply = makeReplyExtractor();
+    const raw = await aiService.chatStream(
+      messages,
+      { temperature: 0.85, maxTokens: 800 },
+      (delta) => {
+        const piece = extractReply(delta);
+        if (piece) send('delta', { text: piece });
+      }
+    );
+
+    const parsed = aiService.extractJson(raw) || {};
+    let reply = String(parsed.reply || '我再想想哦～接下来呢？').slice(0, 120);
+    let action = parsed.action || 'continue';
+    let imagePrompt = parsed.imagePrompt || '';
+    const videoPrompt = parsed.videoPrompt || '';
+    const scene = parsed.scene || safeInput;
+    const emotionQuestion = parsed.emotionQuestion || '';
+
+    const nextPhase = parseInt(parsed.phase, 10);
+    if (nextPhase >= 1 && nextPhase <= 4) session.phase = nextPhase;
+
+    const videoEnabled = process.env.ENABLE_VIDEO === 'true';
+    if (!videoEnabled && action === 'generate_video') {
+      action = 'generate_image';
+      imagePrompt = videoPrompt || imagePrompt;
+    }
+
+    // 强制护栏：在情绪反思至少完成 1 轮之前，禁止 finalize_book
+    // 计数规则：上一轮 AI 是 ask_emotion 且本轮孩子给出了非空回答，emotionRounds += 1
+    if (session.lastAction === 'ask_emotion' && safeInput && safeInput.trim()) {
+      session.emotionRounds = (session.emotionRounds || 0) + 1;
+    }
+    if (action === 'finalize_book' && (session.emotionRounds || 0) < 1) {
+      action = 'ask_emotion';
+      // 改写 reply：宣告先做情绪反思
+      reply = '你的故事好精彩呀！在画成小书前，魔法师想问问你——故事里它现在心情是怎样的呢？';
+      // 让流式打字机也能补到这段（前面 send 的 delta 是模型那段，可能不一致；
+      //   这里直接发一条 delta 让前端把缺的部分补完）
+      send('delta', { text: '\n（先做最后一个情绪小问题哦～）' });
+    }
+    session.lastAction = action;
+
+    // 兜底：除 finalize_book 外，每条 reply 都必须以问号结尾，确保对话不中断
+    const endsWithQuestion = /[？?]\s*$/.test(reply);
+    if (!endsWithQuestion && action !== 'finalize_book') {
+      const followUps = {
+        1: ' 那它长什么样子呀？',
+        2: ' 摸起来会是什么感觉呢？',
+        3: ' 那它会怎么办呢？',
+        4: ' 它现在心里是什么感觉呀？',
+      };
+      const append = followUps[session.phase] || ' 接下来呢？';
+      reply = (reply + append).slice(0, 120);
+      send('delta', { text: append });
+    }
+
+    session.history.push({ role: 'user', content: safeInput });
+    session.history.push({ role: 'assistant', content: reply });
+    session.scenes.push({ text: scene });
+    sessionStore.touch(sessionId);
+    historyService.saveHistory(session);
+
+    send('done', {
+      reply,
+      action,
+      imagePrompt,
+      videoPrompt,
+      scene,
+      emotionQuestion,
+      sanitized: replaced,
+      phase: session.phase,
+      ageGroup: session.ageGroup || '4-5',
+      round: Math.ceil(session.history.length / 2),
+    });
+    res.end();
+  } catch (err) {
+    console.error('chat-stream 失败:', err.message);
+    send('error', { error: err.message || 'AI 调用失败' });
+    res.end();
+  }
+});
+
 // ============ 文生图（提交 + 查询） ============
 
 router.post('/api/image', async (req, res) => {
   try {
     const { sessionId, prompt } = req.body;
     if (!prompt) return res.status(400).json({ error: '缺少图像 prompt' });
-    const result = await imageService.createImage(prompt);
+    const s = sessionStore.getSession(sessionId);
 
-    // 同步模式（ark）直接落盘；异步模式（jimeng）需客户端轮询
-    if (result.mode === 'sync' && result.imageUrl) {
-      const s = sessionStore.getSession(sessionId);
-      if (s) {
-        const last = s.scenes[s.scenes.length - 1];
-        if (last) {
-          last.imageUrl = result.imageUrl;
-          historyService.saveHistory(s);
-        }
+    // 有上一张图就走以图生图，让画面保持连续性
+    let result;
+    let usedEdit = false;
+    const lastImageUrl = s?.lastImageUrl;
+    if (lastImageUrl && /^https?:\/\//i.test(lastImageUrl)) {
+      try {
+        result = await imageService.editImage(prompt, lastImageUrl);
+        usedEdit = true;
+      } catch (e) {
+        console.warn('[editImage] 降级到文生图:', e.message);
+        result = await imageService.createImage(prompt);
       }
+    } else {
+      result = await imageService.createImage(prompt);
     }
-    res.json(result);
+
+    if (result.mode === 'sync' && result.imageUrl && s) {
+      const last = s.scenes[s.scenes.length - 1];
+      if (last) last.imageUrl = result.imageUrl;
+      // 仅当返回的是公网 URL 才作为下一次以图生图的输入
+      if (/^https?:\/\//i.test(result.imageUrl)) {
+        s.lastImageUrl = result.imageUrl;
+      }
+      historyService.saveHistory(s);
+    }
+    res.json({ ...result, usedEdit });
   } catch (err) {
     console.error('image 失败:', err.apiResponse || err.message);
     const status = err.code === 'CREDS_MISSING' ? 500 : 400;
@@ -189,7 +406,10 @@ router.post('/api/book', async (req, res) => {
     if (!s.history.length)
       return res.status(400).json({ error: '故事还没开始呢' });
 
-    const messages = prompts.buildBookMessages(s.history);
+    // 已生成图片的场景作为素材清单交给 AI 选用
+    const scenesWithImages = (s.scenes || []).filter((x) => x.imageUrl);
+
+    const messages = prompts.buildBookMessages(s.history, scenesWithImages);
     const raw = await aiService.chat(messages, {
       temperature: 0.6,
       maxTokens: 1800,
@@ -200,13 +420,67 @@ router.post('/api/book', async (req, res) => {
       return res.status(500).json({ error: '成书失败，请重试' });
     }
 
-    // 把已生成的图片/视频 URL 回填到对应页（按顺序近似匹配）
-    const generated = s.scenes.filter((x) => x.imageUrl || x.videoUrl);
-    book.pages.forEach((p, idx) => {
-      const g = generated[idx];
-      if (g?.imageUrl && !p.imageUrl) p.imageUrl = g.imageUrl;
-      if (g?.videoUrl && !p.videoUrl) p.videoUrl = g.videoUrl;
+    // 1) 优先用 AI 选出的 imageRef 把现有图片回填到对应页
+    book.pages.forEach((p) => {
+      if (p.imageUrl) return;
+      const ref = String(p.imageRef || '').trim();
+      const m = ref.match(/^img(\d+)$/i);
+      if (!m) return;
+      const idx = parseInt(m[1], 10) - 1;
+      const asset = scenesWithImages[idx];
+      if (asset?.imageUrl) p.imageUrl = asset.imageUrl;
     });
+
+    // 2) 仍缺图的页，按页连续生成（有上一张图就以图生图，没有就文生图）
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const QPS_INTERVAL = 1100;
+    let prevImage = null;
+    for (let i = 0; i < book.pages.length; i++) {
+      const p = book.pages[i];
+      if (p.imageUrl) {
+        if (/^https?:\/\//i.test(p.imageUrl)) prevImage = p.imageUrl;
+        continue;
+      }
+      if (p.videoUrl) continue;
+      const promptText = (p.imagePrompt || p.text || '').trim();
+      if (!promptText) continue;
+
+      const tryOnce = async () => {
+        let result;
+        if (prevImage) {
+          try {
+            result = await imageService.editImage(promptText, prevImage);
+          } catch (e) {
+            console.warn(`第${i + 1}页 editImage 降级:`, e.message);
+            result = await imageService.createImage(promptText);
+          }
+        } else {
+          result = await imageService.createImage(promptText);
+        }
+        if (result.imageUrl) {
+          p.imageUrl = result.imageUrl;
+          if (/^https?:\/\//i.test(result.imageUrl)) prevImage = result.imageUrl;
+        }
+      };
+
+      try {
+        await tryOnce();
+      } catch (e) {
+        const isRateLimit = /Concurrent Limit|rate.?limit|429/i.test(e.message || '');
+        if (isRateLimit) {
+          await sleep(2000);
+          try { await tryOnce(); }
+          catch (e2) { console.warn(`第${i + 1}页插图生成失败(重试后):`, e2.message); }
+        } else {
+          console.warn(`第${i + 1}页插图生成失败:`, e.message);
+        }
+      }
+      await sleep(QPS_INTERVAL);
+    }
+
+    // 把成书时新出的最后一张图也回写到 session，便于继续故事
+    if (prevImage) s.lastImageUrl = prevImage;
+    historyService.saveHistory(s);
 
     res.json({ book });
   } catch (err) {
@@ -263,6 +537,14 @@ router.post('/api/histories/:id/resume', (req, res) => {
   s.phase = data.phase || 1;
   s.createdAt = data.createdAt || s.createdAt;
 
+  // 恢复"最近一张图"以便继续故事时仍走以图生图
+  const lastWithImg = [...s.scenes].reverse().find((x) => x?.imageUrl && /^https?:\/\//i.test(x.imageUrl));
+  if (lastWithImg) s.lastImageUrl = lastWithImg.imageUrl;
+
+  // 恢复情绪反思计数：粗略估计——若 phase 已到 4，认为至少做过 1 轮
+  s.emotionRounds = s.phase >= 4 ? 1 : 0;
+  s.lastAction = '';
+
   res.json({
     sessionId: s.id,
     title: data.title,
@@ -291,6 +573,29 @@ router.post('/api/tts', async (req, res) => {
   } catch (err) {
     console.error('TTS 失败:', err.message);
     res.status(500).json({ error: err.message || '语音合成失败' });
+  }
+});
+
+// ============ 语音识别 ============
+
+router.post('/api/stt', async (req, res) => {
+  try {
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    const audioBuffer = Buffer.concat(chunks);
+
+    if (audioBuffer.length < 1000) {
+      return res.json({ text: '' });
+    }
+
+    const format = (req.headers['x-audio-format'] || 'webm').replace(/[^a-z0-9]/g, '');
+    const text = await sttService.recognize(audioBuffer, format);
+    res.json({ text });
+  } catch (err) {
+    console.error('STT 失败:', err.message);
+    res.status(500).json({ error: err.message || '语音识别失败' });
   }
 });
 

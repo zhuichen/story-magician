@@ -41,11 +41,7 @@
   <main class="main">
     <section class="chat-panel" id="chatPanel">
       <div class="chat-messages" id="chatMessages">
-        <!-- Opening message -->
-        <div class="msg msg-assistant">
-          <div class="msg-avatar">🧙</div>
-          <div class="msg-bubble"><%= opening %></div>
-        </div>
+        <!-- Opening message will be streamed in by JS after age selection -->
       </div>
 
       <!-- Input area -->
@@ -167,28 +163,24 @@
     <span id="loadingText">魔法师正在施法…</span>
   </div>
 
-  <!-- Call mode overlay -->
-  <div class="call-overlay hidden" id="callOverlay">
-    <div class="call-modal">
-      <div class="call-avatar">📞</div>
-      <h2 class="call-title">正在通话中...</h2>
-      <div class="call-status" id="callStatus">请开始说话</div>
-      <div class="call-waveform" id="callWaveform">
+  <!-- Call mode floating bar -->
+  <div class="call-bar hidden" id="callBar">
+    <div class="call-bar-left">
+      <span class="call-bar-icon">🧙</span>
+      <span class="call-bar-status" id="callStatus">正在聆听...</span>
+    </div>
+    <div class="call-bar-center">
+      <div class="call-bar-waveform" id="callWaveform">
         <span class="wave-bar"></span>
         <span class="wave-bar"></span>
         <span class="wave-bar"></span>
         <span class="wave-bar"></span>
         <span class="wave-bar"></span>
       </div>
-      <button class="btn-hang-up" id="hangUpBtn">挂断</button>
     </div>
+    <button class="call-bar-hangup" id="hangUpBtn">📞 挂断</button>
   </div>
 
-  <script>
-    window.__INIT__ = {
-      opening: `<%- opening.replace(/`/g, '\\`') %>`,
-    };
-  </script>
   <script src="/js/app.js"></script>
 </body>
 </html>

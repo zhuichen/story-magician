@@ -12,9 +12,19 @@
   let isRecording = false;
   let recognition = null;
   let isCallMode = false;
-  let callRecognition = null;
   let silenceTimer = null;
-  let isSpeaking = false;
+  let callStream = null;
+  let callProcessor = null;
+  let callAudioCtx = null;
+  let callAnalyser = null;
+  let callAudio = null;
+  let callState = 'idle';
+  let callSilenceStart = 0;
+  let callHasSpeech = false;
+  let callAnimFrame = null;
+  let callPcmChunks = [];
+  let callInputSampleRate = 0;
+  let callRecordStartTime = 0;
 
   // ── DOM refs ────────────────────────────────────────────────────────────────
   const chatMessages = document.getElementById('chatMessages');
@@ -54,11 +64,10 @@
   const ageBadge  = document.getElementById('ageBadge');
 
   const callBtn       = document.getElementById('callBtn');
-  const callOverlay   = document.getElementById('callOverlay');
+  const callBar       = document.getElementById('callBar');
   const callStatus    = document.getElementById('callStatus');
   const callWaveform  = document.getElementById('callWaveform');
   const hangUpBtn     = document.getElementById('hangUpBtn');
-
   // ── Phase progress bar ────────────────────────────────────────────────────
   function updatePhaseBar(phase) {
     for (let i = 1; i <= 4; i++) {
@@ -164,89 +173,247 @@
   }
 
   // ── Call Mode: Continuous Voice Conversation ──────────────────────────────
-  function startCallMode() {
+  const CALL_SILENCE_THRESHOLD = 8;
+  const CALL_SILENCE_DURATION = 2000;
+  const CALL_MAX_RECORDING = 30000;
+
+  function setCallState(state) {
+    callState = state;
+    callStatus.className = 'call-bar-status';
+    callWaveform.className = 'call-bar-waveform';
+
+    switch (state) {
+      case 'listening':
+        callStatus.textContent = '正在聆听...';
+        callStatus.classList.add('listening');
+        callWaveform.classList.add('active');
+        break;
+      case 'thinking':
+        callStatus.textContent = '魔法师正在思考...';
+        callStatus.classList.add('thinking');
+        callWaveform.classList.add('thinking');
+        break;
+      case 'speaking':
+        callStatus.textContent = '魔法师正在说话...';
+        callStatus.classList.add('speaking');
+        break;
+      case 'recognizing':
+        callStatus.textContent = '正在识别语音...';
+        callStatus.classList.add('thinking');
+        callWaveform.classList.add('thinking');
+        break;
+      default:
+        callStatus.textContent = '请开始说话...';
+    }
+  }
+
+  async function startCallMode() {
     if (isCallMode || !sessionId) return;
 
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      alert('您的浏览器不支持语音识别功能');
+    try {
+      callStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+    } catch (e) {
+      alert('无法访问麦克风，请允许麦克风权限后重试');
       return;
     }
 
     isCallMode = true;
-    callOverlay.classList.remove('hidden');
-    callStatus.textContent = '请开始说话...';
+    callBar.classList.remove('hidden');
+    document.body.classList.add('call-active');
+    callBtn.classList.add('hidden');
 
-    // 初始化持续语音识别
-    callRecognition = new SR();
-    callRecognition.lang = 'zh-CN';
-    callRecognition.continuous = true;
-    callRecognition.interimResults = true;
-    callRecognition.maxAlternatives = 1;
+    callAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    callInputSampleRate = callAudioCtx.sampleRate;
+    const source = callAudioCtx.createMediaStreamSource(callStream);
+    callAnalyser = callAudioCtx.createAnalyser();
+    callAnalyser.fftSize = 512;
+    source.connect(callAnalyser);
 
-    let finalTranscript = '';
-    let interimTranscript = '';
-
-    callRecognition.onstart = () => {
-      callStatus.textContent = '正在聆听...';
-      startWaveformAnimation();
+    callProcessor = callAudioCtx.createScriptProcessor(4096, 1, 1);
+    callProcessor.onaudioprocess = (e) => {
+      if (!isCallMode || callState !== 'listening') return;
+      const input = e.inputBuffer.getChannelData(0);
+      callPcmChunks.push(new Float32Array(input));
     };
+    source.connect(callProcessor);
+    callProcessor.connect(callAudioCtx.destination);
 
-    callRecognition.onresult = (e) => {
-      interimTranscript = '';
+    startCallRecording();
+  }
 
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const transcript = e.results[i][0].transcript;
-        if (e.results[i].isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
+  function startCallRecording() {
+    if (!isCallMode || !callStream) return;
+
+    callPcmChunks = [];
+    callHasSpeech = false;
+    callSilenceStart = 0;
+    callRecordStartTime = Date.now();
+
+    setCallState('listening');
+    monitorCallAudio();
+  }
+
+  function monitorCallAudio() {
+    if (!callAnalyser || !isCallMode) return;
+
+    const data = new Uint8Array(callAnalyser.frequencyBinCount);
+
+    function check() {
+      if (!isCallMode || callState !== 'listening') return;
+
+      callAnalyser.getByteFrequencyData(data);
+
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      const avg = sum / data.length;
+
+      if (avg > CALL_SILENCE_THRESHOLD) {
+        callHasSpeech = true;
+        callSilenceStart = 0;
+      } else if (callHasSpeech) {
+        if (!callSilenceStart) {
+          callSilenceStart = Date.now();
+        } else if (Date.now() - callSilenceStart > CALL_SILENCE_DURATION) {
+          stopCallRecordingAndSend();
+          return;
         }
       }
 
-      // 显示实时识别结果
-      const displayText = finalTranscript + interimTranscript;
-      if (displayText.trim()) {
-        callStatus.textContent = `"${displayText}"`;
-        isSpeaking = true;
-
-        // 重置静默计时器
-        clearTimeout(silenceTimer);
-        silenceTimer = setTimeout(() => {
-          if (finalTranscript.trim()) {
-            sendCallMessage(finalTranscript.trim());
-            finalTranscript = '';
-            interimTranscript = '';
-          }
-        }, 1500); // 1.5秒静默后自动发送
+      if (callHasSpeech && Date.now() - callRecordStartTime > CALL_MAX_RECORDING) {
+        stopCallRecordingAndSend();
+        return;
       }
-    };
 
-    callRecognition.onerror = (e) => {
-      console.error('语音识别错误:', e.error);
-      if (e.error === 'no-speech') {
-        callStatus.textContent = '没有听到声音，请说话...';
-      } else if (e.error === 'network') {
-        callStatus.textContent = '网络错误，请检查连接';
-      }
-    };
+      callAnimFrame = requestAnimationFrame(check);
+    }
 
-    callRecognition.onend = () => {
-      if (isCallMode) {
-        // 自动重启识别以保持持续监听
-        try {
-          callRecognition.start();
-        } catch (e) {
-          console.error('重启识别失败:', e);
-        }
-      }
-    };
+    callAnimFrame = requestAnimationFrame(check);
+  }
+
+  function stopCallRecordingAndSend() {
+    if (callAnimFrame) {
+      cancelAnimationFrame(callAnimFrame);
+      callAnimFrame = null;
+    }
+    if (!isCallMode) return;
+    if (callHasSpeech && callPcmChunks.length > 0) {
+      sendCallAudio();
+    } else {
+      startCallRecording();
+    }
+  }
+
+  function flattenPcm(chunks) {
+    let length = 0;
+    for (const c of chunks) length += c.length;
+    const out = new Float32Array(length);
+    let offset = 0;
+    for (const c of chunks) {
+      out.set(c, offset);
+      offset += c.length;
+    }
+    return out;
+  }
+
+  function downsampleTo16k(buffer, inputRate) {
+    const targetRate = 16000;
+    if (inputRate === targetRate) return buffer;
+    const ratio = inputRate / targetRate;
+    const newLen = Math.floor(buffer.length / ratio);
+    const out = new Float32Array(newLen);
+    for (let i = 0; i < newLen; i++) {
+      const start = Math.floor(i * ratio);
+      const end = Math.min(buffer.length, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      let count = 0;
+      for (let j = start; j < end; j++) { sum += buffer[j]; count++; }
+      out[i] = count > 0 ? sum / count : 0;
+    }
+    return out;
+  }
+
+  function encodeWav(pcm, sampleRate) {
+    const bytesPerSample = 2;
+    const dataSize = pcm.length * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    function writeStr(offset, s) {
+      for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+    }
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * bytesPerSample, true);
+    view.setUint16(32, bytesPerSample, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let offset = 44;
+    for (let i = 0; i < pcm.length; i++) {
+      let s = Math.max(-1, Math.min(1, pcm[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      offset += 2;
+    }
+    return new Blob([view], { type: 'audio/wav' });
+  }
+
+  async function sendCallAudio() {
+    if (!isCallMode || busy) {
+      if (isCallMode && !busy) startCallRecording();
+      return;
+    }
+
+    setCallState('recognizing');
+
+    const flat = flattenPcm(callPcmChunks);
+    callPcmChunks = [];
+    const downsampled = downsampleTo16k(flat, callInputSampleRate);
+    const wavBlob = encodeWav(downsampled, 16000);
 
     try {
-      callRecognition.start();
+      const res = await fetch('/api/stt', {
+        method: 'POST',
+        headers: { 'X-Audio-Format': 'wav' },
+        body: wavBlob,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: '识别失败' }));
+        throw new Error(err.error || '识别失败');
+      }
+
+      const data = await res.json();
+      const text = (data.text || '').trim();
+
+      if (text) {
+        await sendCallMessage(text);
+      } else {
+        callStatus.textContent = '没听清，请再说一次...';
+        setTimeout(() => {
+          if (isCallMode) startCallRecording();
+        }, 800);
+      }
     } catch (e) {
-      console.error('启动识别失败:', e);
-      stopCallMode();
+      console.error('语音识别失败:', e);
+      callStatus.textContent = '识别失败，请重试...';
+      setTimeout(() => {
+        if (isCallMode) startCallRecording();
+      }, 1500);
     }
   }
 
@@ -254,43 +421,78 @@
     if (!isCallMode) return;
 
     isCallMode = false;
-    isSpeaking = false;
+    callState = 'idle';
+    callHasSpeech = false;
+    callSilenceStart = 0;
+    callPcmChunks = [];
     clearTimeout(silenceTimer);
 
-    if (callRecognition) {
-      try {
-        callRecognition.stop();
-      } catch (e) {
-        console.error('停止识别失败:', e);
-      }
-      callRecognition = null;
+    if (callAnimFrame) {
+      cancelAnimationFrame(callAnimFrame);
+      callAnimFrame = null;
     }
 
-    stopWaveformAnimation();
-    callOverlay.classList.add('hidden');
+    if (callAudio) {
+      callAudio.pause();
+      callAudio.currentTime = 0;
+      callAudio = null;
+    }
+
+    if (callProcessor) {
+      try { callProcessor.disconnect(); } catch (e) {}
+      callProcessor.onaudioprocess = null;
+      callProcessor = null;
+    }
+
+    if (callStream) {
+      callStream.getTracks().forEach(t => t.stop());
+      callStream = null;
+    }
+
+    if (callAudioCtx) {
+      callAudioCtx.close().catch(() => {});
+      callAudioCtx = null;
+      callAnalyser = null;
+    }
+
+    callWaveform.className = 'call-bar-waveform';
+    callBar.classList.add('hidden');
+    document.body.classList.remove('call-active');
+    callBtn.classList.remove('hidden');
   }
 
   async function sendCallMessage(text) {
     if (!text || busy || !sessionId) return;
 
-    callStatus.textContent = '魔法师正在回答...';
-    stopWaveformAnimation();
+    setCallState('thinking');
 
     appendUserMsg(text);
+    scrollBottom();
     setBusy(true);
 
+    const { bubble, msgEl } = appendStreamingAssistantMsg();
+
     try {
-      const data = await apiFetch('/api/chat', 'POST', { sessionId, input: text });
+      const data = await streamChat(
+        { sessionId, input: text },
+        (delta) => appendToBubble(bubble, delta)
+      );
+      finalizeStreamingBubble(bubble);
       round = data.round || round + 1;
 
       if (data.phase) updatePhaseBar(data.phase);
 
-      const sanitizeNote = data.sanitized
-        ? '<div class="msg-sanitized">✨ 魔法师把故事变得更美好了</div>'
-        : '';
+      if (data.sanitized) {
+        const note = document.createElement('div');
+        note.className = 'msg-sanitized';
+        note.textContent = '✨ 魔法师把故事变得更美好了';
+        bubble.parentNode.appendChild(note);
+      }
 
       const isEmotion = data.action === 'ask_emotion';
-      appendAssistantMsg(data.reply + sanitizeNote, isEmotion ? 'msg-emotion' : '');
+      if (isEmotion) msgEl.classList.add('msg-emotion');
+
+      scrollBottom();
 
       if (round >= 5) bookBtn.classList.remove('hidden');
       if (round >= 3) reportBtn.classList.remove('hidden');
@@ -303,26 +505,84 @@
         bookBtn.classList.remove('hidden');
       }
 
-      // 等待 TTS 播放完成后再继续监听
-      callStatus.textContent = '请继续说话...';
-      startWaveformAnimation();
+      await playCallTTS(data.reply);
     } catch (e) {
-      appendError(e.message || '出了点小问题，请再试一次！');
+      finalizeStreamingBubble(bubble);
+      bubble.textContent = '⚠️ ' + (e.message || '出了点小问题，请再试一次！');
+      bubble.style.background = '#ffebee';
+      bubble.style.color = '#c62828';
       callStatus.textContent = '出错了，请重试...';
     } finally {
       setBusy(false);
+      if (isCallMode) {
+        startCallRecording();
+      }
     }
   }
 
-  function startWaveformAnimation() {
-    if (callWaveform) {
-      callWaveform.classList.add('active');
-    }
-  }
+  async function playCallTTS(text) {
+    if (!ttsEnabled || !text.trim()) return;
 
-  function stopWaveformAnimation() {
-    if (callWaveform) {
-      callWaveform.classList.remove('active');
+    setCallState('speaking');
+
+    const plainText = text.replace(/<[^>]*>/g, '').trim();
+    if (!plainText) return;
+
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: plainText })
+      });
+
+      if (res.ok) {
+        const audioBlob = await res.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        callAudio = new Audio(audioUrl);
+
+        await new Promise((resolve) => {
+          callAudio.onended = () => {
+            URL.revokeObjectURL(audioUrl);
+            callAudio = null;
+            resolve();
+          };
+          callAudio.onerror = () => {
+            URL.revokeObjectURL(audioUrl);
+            callAudio = null;
+            resolve();
+          };
+          callAudio.play().catch(() => resolve());
+        });
+        return;
+      }
+    } catch (e) {
+      console.warn('火山 TTS 失败，降级到浏览器 TTS:', e);
+    }
+
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(plainText);
+      utter.lang = 'zh-CN';
+      utter.rate = 0.95;
+      utter.pitch = 1.3;
+      utter.volume = 1.0;
+
+      const voices = window.speechSynthesis.getVoices();
+      const preferredVoice = voices.find(v =>
+        v.lang.startsWith('zh') && (
+          v.name.includes('Tingting') ||
+          v.name.includes('Xiaoxiao') ||
+          v.name.includes('Female') ||
+          v.name.includes('女')
+        )
+      );
+      if (preferredVoice) utter.voice = preferredVoice;
+
+      await new Promise((resolve) => {
+        utter.onend = resolve;
+        utter.onerror = resolve;
+        window.speechSynthesis.speak(utter);
+      });
     }
   }
 
@@ -342,13 +602,29 @@
 
   // ── Init session ──────────────────────────────────────────────────────────
   async function initSession() {
+    showToast('🪄 魔法师启动中…');
     try {
       const res = await apiFetch('/api/session', 'POST', { ageGroup });
       sessionId = res.sessionId;
-      const opening = res.opening || (window.__INIT__ || {}).opening || '你好！我是故事魔法师 ✨';
-      appendAssistantMsg(opening);
       setAgeBadge(ageGroup);
+
+      // 流式拉取并打字机展示随机开场白
+      const { bubble } = appendStreamingAssistantMsg();
+      let opening = '';
+      try {
+        const data = await streamSSE(
+          '/api/opening-stream',
+          { sessionId },
+          (delta) => appendToBubble(bubble, delta)
+        );
+        opening = (data && data.opening) || (bubble.textContent || '').trim();
+      } finally {
+        finalizeStreamingBubble(bubble);
+      }
+      hideToast();
+      if (opening) speakText(opening);
     } catch (e) {
+      hideToast();
       appendError('无法连接服务器，请刷新页面');
     }
   }
@@ -362,26 +638,36 @@
     userInput.value = '';
     setBusy(true);
 
+    // 先创建一个空气泡用于流式追加
+    const { bubble, msgEl } = appendStreamingAssistantMsg();
+
     try {
-      const data = await apiFetch('/api/chat', 'POST', { sessionId, input: text });
+      const data = await streamChat(
+        { sessionId, input: text },
+        (delta) => appendToBubble(bubble, delta)
+      );
+      finalizeStreamingBubble(bubble);
       round = data.round || round + 1;
 
-      // Update phase bar
       if (data.phase) updatePhaseBar(data.phase);
 
-      // Show sanitize notice if content was replaced
-      const sanitizeNote = data.sanitized
-        ? '<div class="msg-sanitized">✨ 魔法师把故事变得更美好了</div>'
-        : '';
+      // Sanitize note
+      if (data.sanitized) {
+        const note = document.createElement('div');
+        note.className = 'msg-sanitized';
+        note.textContent = '✨ 魔法师把故事变得更美好了';
+        bubble.parentNode.appendChild(note);
+      }
 
       const isEmotion = data.action === 'ask_emotion';
-      appendAssistantMsg(data.reply + sanitizeNote, isEmotion ? 'msg-emotion' : '');
+      if (isEmotion) msgEl.classList.add('msg-emotion');
 
-      // Show book + report buttons at appropriate rounds
+      // 流式输出后再朗读完整文本
+      speakText(bubble.textContent || '');
+
       if (round >= 5) bookBtn.classList.remove('hidden');
       if (round >= 3) reportBtn.classList.remove('hidden');
 
-      // Handle action
       if (data.action === 'generate_image' && data.imagePrompt) {
         await handleImageGeneration(data.imagePrompt, data.scene || text);
       } else if (data.action === 'generate_video' && data.videoPrompt) {
@@ -390,7 +676,10 @@
         bookBtn.classList.remove('hidden');
       }
     } catch (e) {
-      appendError(e.message || '出了点小问题，请再试一次！');
+      finalizeStreamingBubble(bubble);
+      bubble.textContent = '⚠️ ' + (e.message || '出了点小问题，请再试一次！');
+      bubble.style.background = '#ffebee';
+      bubble.style.color = '#c62828';
     } finally {
       setBusy(false);
     }
@@ -727,6 +1016,7 @@
     busy = false;
     sessionId = null;
     if (isRecording) stopRecording();
+    if (isCallMode) stopCallMode();
     window.speechSynthesis && window.speechSynthesis.cancel();
     userInput.disabled = false;
     sendBtn.disabled = false;
@@ -745,7 +1035,39 @@
   }
 
   // ── Helpers: DOM ──────────────────────────────────────────────────────────
-  function appendAssistantMsg(htmlContent, extraClass = '') {
+  function appendStreamingAssistantMsg() {
+    const div = document.createElement('div');
+    div.className = 'msg msg-assistant';
+    div.innerHTML = `
+      <div class="msg-avatar">🧙</div>
+      <div>
+        <div class="msg-bubble msg-streaming"><span class="stream-text"></span><span class="stream-cursor"></span></div>
+      </div>`;
+    chatMessages.appendChild(div);
+    scrollBottom();
+    return { msgEl: div, bubble: div.querySelector('.msg-bubble') };
+  }
+
+  function appendToBubble(bubble, text) {
+    if (!bubble || !text) return;
+    const span = bubble.querySelector('.stream-text');
+    if (span) span.textContent = (span.textContent || '') + text;
+    else bubble.textContent = (bubble.textContent || '') + text;
+    scrollBottom();
+  }
+
+  function finalizeStreamingBubble(bubble) {
+    if (!bubble) return;
+    const cursor = bubble.querySelector('.stream-cursor');
+    if (cursor) cursor.remove();
+    bubble.classList.remove('msg-streaming');
+    const span = bubble.querySelector('.stream-text');
+    if (span) {
+      bubble.textContent = span.textContent || '';
+    }
+  }
+
+  function appendAssistantMsg(htmlContent, extraClass = '', autoSpeak = true) {
     const div = document.createElement('div');
     div.className = `msg msg-assistant ${extraClass}`.trim();
     div.innerHTML = `
@@ -755,7 +1077,7 @@
       </div>`;
     chatMessages.appendChild(div);
     scrollBottom();
-    speakText(htmlContent);
+    if (autoSpeak) speakText(htmlContent);
     return div;
   }
 
@@ -820,10 +1142,9 @@
     micBtn.disabled = val;
     if (val) {
       if (isRecording) stopRecording();
-      showToast('魔法师正在思考…');
     } else {
       hideToast();
-      userInput.focus();
+      if (!isCallMode) userInput.focus();
     }
   }
 
@@ -847,6 +1168,67 @@
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
     return json;
+  }
+
+  /**
+   * 通用 SSE POST 客户端。返回 done 事件 payload；中途的 delta 通过 onDelta 回调。
+   * @param {string} path
+   * @param {object} body
+   * @param {(text: string) => void} onDelta
+   */
+  async function streamSSE(path, body, onDelta) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok || !res.body) {
+      let msg = `HTTP ${res.status}`;
+      try { const j = await res.json(); msg = j.error || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    let done = null;
+    let errorMsg = null;
+
+    while (true) {
+      const { value, done: streamDone } = await reader.read();
+      if (streamDone) break;
+      buf += decoder.decode(value, { stream: true });
+
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const raw = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let event = 'message';
+        const dataLines = [];
+        raw.split('\n').forEach((line) => {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        });
+        if (!dataLines.length) continue;
+        let payload;
+        try { payload = JSON.parse(dataLines.join('\n')); } catch (_) { continue; }
+        if (event === 'delta' && payload.text) {
+          onDelta(payload.text);
+        } else if (event === 'done') {
+          done = payload;
+        } else if (event === 'error') {
+          errorMsg = payload.error || '出错了';
+        }
+      }
+    }
+
+    if (errorMsg) throw new Error(errorMsg);
+    if (!done) throw new Error('未收到完整响应');
+    return done;
+  }
+
+  function streamChat(body, onDelta) {
+    return streamSSE('/api/chat-stream', body, onDelta);
   }
 
   /**
