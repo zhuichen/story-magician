@@ -202,8 +202,38 @@
     }
   }
 
+  // ── iOS detection ──────────────────────────────────────────────────────────
+  function isIOS() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
   // ── Voice: TTS ────────────────────────────────────────────────────────────
-  async function speakText(html) {
+  let cachedTtsAudio = null;
+
+  function preloadTtsAudio(text) {
+    if (!text) return;
+    if (cachedTtsAudio) {
+      cachedTtsAudio.pause();
+      URL.revokeObjectURL(cachedTtsAudio.src);
+    }
+    cachedTtsAudio = null;
+    fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    })
+      .then(res => res.ok ? res.blob() : null)
+      .then(blob => {
+        if (blob) {
+          cachedTtsAudio = new Audio(URL.createObjectURL(blob));
+          cachedTtsAudio.preload = 'none';
+        }
+      })
+      .catch(() => {});
+  }
+
+  async function speakText(html, forceInteractionContext = false) {
     if (!ttsEnabled) return;
 
     const tmp = document.createElement('div');
@@ -211,7 +241,23 @@
     const text = (tmp.textContent || tmp.innerText || '').trim();
     if (!text) return;
 
-    // 优先使用火山引擎 TTS（儿童声音）
+    const playOptions = {};
+    if (forceInteractionContext || isIOS()) {
+      playOptions.autoplay = false;
+    }
+
+    const tryPlayAudio = (audio) => {
+      return audio.play().catch(e => {
+        if (isIOS()) {
+          const resumePromise = audio.play();
+          if (resumePromise !== undefined) {
+            return resumePromise.catch(() => {});
+          }
+        }
+        return Promise.reject(e);
+      });
+    };
+
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
@@ -223,10 +269,19 @@
         const audioBlob = await res.blob();
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
+        audio.preload = 'auto';
         await new Promise((resolve) => {
           audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(); };
           audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(); };
-          audio.play().catch(() => resolve());
+          tryPlayAudio(audio).then(() => {
+            if (isIOS() && audio.paused) {
+              const canvas = document.createElement('canvas');
+              canvas.width = 1;
+              canvas.height = 1;
+              canvas.getContext('2d');
+              canvas.addEventListener('click', () => {}, { once: true });
+            }
+          }).catch(() => resolve());
         });
         return;
       }
@@ -234,7 +289,6 @@
       console.warn('火山 TTS 失败，降级到浏览器 TTS:', e);
     }
 
-    // 降级：使用浏览器自带 TTS
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(text);
@@ -243,7 +297,13 @@
       utter.pitch = 1.3;
       utter.volume = 1.0;
 
-      const voices = window.speechSynthesis.getVoices();
+      const loadVoices = () => new Promise(resolve => {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) resolve(voices);
+        else window.speechSynthesis.onvoiceschanged = () => resolve(window.speechSynthesis.getVoices());
+      });
+
+      const voices = await loadVoices();
       const preferredVoice = voices.find(v =>
         v.lang.startsWith('zh') && (
           v.name.includes('Tingting') ||
@@ -678,6 +738,10 @@
     const plainText = text.replace(/<[^>]*>/g, '').trim();
     if (!plainText) return;
 
+    const tryPlayAudio = (audio) => {
+      return audio.play().catch(() => {});
+    };
+
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
@@ -701,7 +765,7 @@
             callAudio = null;
             resolve();
           };
-          callAudio.play().catch(() => resolve());
+          tryPlayAudio(callAudio).catch(() => resolve());
         });
         return;
       }
@@ -717,7 +781,13 @@
       utter.pitch = 1.3;
       utter.volume = 1.0;
 
-      const voices = window.speechSynthesis.getVoices();
+      const loadVoices = () => new Promise(resolve => {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) resolve(voices);
+        else window.speechSynthesis.onvoiceschanged = () => resolve(window.speechSynthesis.getVoices());
+      });
+
+      const voices = await loadVoices();
       const preferredVoice = voices.find(v =>
         v.lang.startsWith('zh') && (
           v.name.includes('Tingting') ||
@@ -1847,13 +1917,33 @@
   if (exportImageBtn) exportImageBtn.addEventListener('click', exportBookImage);
   if (generateAnimBtn) generateAnimBtn.addEventListener('click', makeBookVideo);
 
-  // Age selection: pick group → hide modal → start session
+  async function requestMicPermissionEarly() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    if (isIOS()) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        try {
+          const ctx = new AudioCtx();
+          if (ctx.state === 'suspended') {
+            await ctx.resume();
+          }
+          await ctx.close();
+        } catch (_) {}
+      }
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+    } catch (_) {}
+  }
+
   document.querySelectorAll('.age-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       ageGroup = btn.dataset.age || '4-5';
       hideAgeModal();
       userInput.focus();
       loadHistoryList();
+      requestMicPermissionEarly();
       await initSession();
     });
   });
