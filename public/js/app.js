@@ -68,6 +68,107 @@
   const callStatus    = document.getElementById('callStatus');
   const callWaveform  = document.getElementById('callWaveform');
   const hangUpBtn     = document.getElementById('hangUpBtn');
+
+  const incomingCall    = document.getElementById('incomingCall');
+  const callAcceptBtn   = document.getElementById('callAcceptBtn');
+  const callRejectBtn   = document.getElementById('callRejectBtn');
+
+  // ── Incoming-call: synthesized ringtone ──────────────────────────────────
+  let ringCtx = null;
+  let ringTimer = null;
+  let ringNodes = [];
+  let ringStopFlag = false;
+
+  function stopRingtone() {
+    ringStopFlag = true;
+    if (ringTimer) { clearTimeout(ringTimer); ringTimer = null; }
+    ringNodes.forEach((n) => { try { n.stop(); } catch (_) {} try { n.disconnect(); } catch (_) {} });
+    ringNodes = [];
+    if (ringCtx) {
+      ringCtx.close().catch(() => {});
+      ringCtx = null;
+    }
+  }
+
+  // 模拟微信"叮咚"双音电话铃，使用 Web Audio 合成，避免外链音频资源
+  function playRingtone() {
+    stopRingtone();
+    ringStopFlag = false;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      ringCtx = new Ctx();
+    } catch (_) { return; }
+
+    const tone = (freq, startAt, dur, peakGain = 0.18) => {
+      if (!ringCtx) return;
+      const osc = ringCtx.createOscillator();
+      const gain = ringCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, startAt);
+      gain.gain.exponentialRampToValueAtTime(peakGain, startAt + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + dur);
+      osc.connect(gain).connect(ringCtx.destination);
+      osc.start(startAt);
+      osc.stop(startAt + dur + 0.05);
+      ringNodes.push(osc, gain);
+    };
+
+    // 一次铃声 = 高音 + 低音两次叮咚
+    function ringOnce() {
+      if (ringStopFlag || !ringCtx) return;
+      const t0 = ringCtx.currentTime + 0.02;
+      tone(988, t0,        0.32);            // B5 叮
+      tone(659, t0 + 0.35, 0.45, 0.16);      // E5 咚
+      tone(988, t0 + 0.95, 0.32);
+      tone(659, t0 + 1.30, 0.45, 0.16);
+      // 每 ~2.4s 重复一次，模拟真实电话铃
+      ringTimer = setTimeout(() => {
+        if (!ringStopFlag) ringOnce();
+      }, 2400);
+    }
+
+    ringOnce();
+  }
+
+  // ── Incoming-call overlay control ────────────────────────────────────────
+  let incomingCallOpen = false;
+  let incomingShownThisSession = false;
+  let incomingCallAutoTimer = null;
+
+  function showIncomingCall() {
+    if (incomingCallOpen || isCallMode) return;
+    incomingCallOpen = true;
+    incomingShownThisSession = true;
+    incomingCall.classList.remove('hidden');
+    incomingCall.setAttribute('aria-hidden', 'false');
+    playRingtone();
+    // 30 秒无人接听自动关闭，避免一直响
+    if (incomingCallAutoTimer) clearTimeout(incomingCallAutoTimer);
+    incomingCallAutoTimer = setTimeout(() => {
+      if (incomingCallOpen) hideIncomingCall();
+    }, 30000);
+  }
+
+  function hideIncomingCall() {
+    if (!incomingCallOpen) return;
+    incomingCallOpen = false;
+    incomingCall.classList.add('hidden');
+    incomingCall.setAttribute('aria-hidden', 'true');
+    stopRingtone();
+    if (incomingCallAutoTimer) { clearTimeout(incomingCallAutoTimer); incomingCallAutoTimer = null; }
+  }
+
+  function acceptIncomingCall() {
+    hideIncomingCall();
+    startCallMode();
+  }
+
+  function rejectIncomingCall() {
+    hideIncomingCall();
+  }
+
   // ── Phase progress bar ────────────────────────────────────────────────────
   function updatePhaseBar(phase) {
     for (let i = 1; i <= 4; i++) {
@@ -99,8 +200,11 @@
         const audioBlob = await res.blob();
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
-        audio.play();
-        audio.onended = () => URL.revokeObjectURL(audioUrl);
+        await new Promise((resolve) => {
+          audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(); };
+          audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(); };
+          audio.play().catch(() => resolve());
+        });
         return;
       }
     } catch (e) {
@@ -127,7 +231,11 @@
       );
       if (preferredVoice) utter.voice = preferredVoice;
 
-      window.speechSynthesis.speak(utter);
+      await new Promise((resolve) => {
+        utter.onend = resolve;
+        utter.onerror = resolve;
+        window.speechSynthesis.speak(utter);
+      });
     }
   }
 
@@ -471,6 +579,7 @@
     setBusy(true);
 
     const { bubble, msgEl } = appendStreamingAssistantMsg();
+    let shouldAutoBook = false;
 
     try {
       const data = await streamChat(
@@ -503,6 +612,7 @@
         await handleVideoGeneration(data.videoPrompt, data.scene || text);
       } else if (data.action === 'finalize_book') {
         bookBtn.classList.remove('hidden');
+        shouldAutoBook = true;
       }
 
       await playCallTTS(data.reply);
@@ -514,7 +624,9 @@
       callStatus.textContent = '出错了，请重试...';
     } finally {
       setBusy(false);
-      if (isCallMode) {
+      if (shouldAutoBook) {
+        makeBook();
+      } else if (isCallMode) {
         startCallRecording();
       }
     }
@@ -622,7 +734,15 @@
         finalizeStreamingBubble(bubble);
       }
       hideToast();
-      if (opening) speakText(opening);
+
+      // 等开场白朗读结束后，弹出"微信电话"邀请孩子接听进入语音模式
+      if (opening) {
+        await speakText(opening);
+      }
+      // 仅每个 session 弹一次，避免重复打扰
+      if (!incomingShownThisSession && !isCallMode) {
+        showIncomingCall();
+      }
     } catch (e) {
       hideToast();
       appendError('无法连接服务器，请刷新页面');
@@ -640,6 +760,7 @@
 
     // 先创建一个空气泡用于流式追加
     const { bubble, msgEl } = appendStreamingAssistantMsg();
+    let shouldAutoBook = false;
 
     try {
       const data = await streamChat(
@@ -674,6 +795,7 @@
         await handleVideoGeneration(data.videoPrompt, data.scene || text);
       } else if (data.action === 'finalize_book') {
         bookBtn.classList.remove('hidden');
+        shouldAutoBook = true;
       }
     } catch (e) {
       finalizeStreamingBubble(bubble);
@@ -682,6 +804,7 @@
       bubble.style.color = '#c62828';
     } finally {
       setBusy(false);
+      if (shouldAutoBook) makeBook();
     }
   }
 
@@ -783,6 +906,11 @@
     }
   }
 
+  function proxyImageUrl(url) {
+    if (!url || !/^https?:\/\//i.test(url)) return url;
+    return '/api/proxy-image?url=' + encodeURIComponent(url);
+  }
+
   function renderBook(book) {
     bookTitle.textContent = `✨ ${book.title || '我的魔法小书'}`;
     bookPages.innerHTML = '';
@@ -793,7 +921,7 @@
 
       let mediaHtml = '';
       if (page.imageUrl) {
-        mediaHtml = `<img class="book-page-img" src="${escHtml(page.imageUrl)}" alt="第${i+1}页插图" />`;
+        mediaHtml = `<img class="book-page-img" crossorigin="anonymous" src="${escHtml(proxyImageUrl(page.imageUrl))}" alt="第${i+1}页插图" />`;
       } else if (page.videoUrl) {
         mediaHtml = `<video class="book-page-img" src="${escHtml(page.videoUrl)}" controls muted loop playsinline></video>`;
       } else {
@@ -813,6 +941,97 @@
     });
 
     bookClosing.textContent = book.closing || '';
+  }
+
+  // ── Export book as a long image ──────────────────────────────────────────
+  let html2canvasLoader = null;
+  function loadHtml2Canvas() {
+    if (window.html2canvas) return Promise.resolve(window.html2canvas);
+    if (html2canvasLoader) return html2canvasLoader;
+    html2canvasLoader = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+      s.onload = () => resolve(window.html2canvas);
+      s.onerror = () => {
+        html2canvasLoader = null;
+        reject(new Error('截图组件加载失败，请检查网络'));
+      };
+      document.head.appendChild(s);
+    });
+    return html2canvasLoader;
+  }
+
+  async function waitForBookImages() {
+    const imgs = bookPages.querySelectorAll('img');
+    await Promise.all(
+      Array.from(imgs).map((img) => {
+        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+        return new Promise((resolve) => {
+          img.addEventListener('load', resolve, { once: true });
+          img.addEventListener('error', resolve, { once: true });
+        });
+      })
+    );
+  }
+
+  async function exportBookImage() {
+    if (busy) return;
+    const exportBtn = document.getElementById('exportImageBtn');
+    const exportRoot = document.getElementById('bookExportRoot');
+    if (!exportRoot) return;
+
+    setBusy(true);
+    if (exportBtn) {
+      exportBtn.disabled = true;
+      exportBtn.textContent = '🖼️ 生成中…';
+    }
+    showToast('🖼️ 正在生成长图…');
+
+    const modalContent = exportRoot.closest('.modal-content');
+    const prevModalStyle = modalContent ? modalContent.style.cssText : '';
+    const prevRootStyle = exportRoot.style.cssText;
+    if (modalContent) {
+      modalContent.style.maxHeight = 'none';
+      modalContent.style.overflow = 'visible';
+    }
+    exportRoot.style.background = '#fff';
+    exportRoot.style.padding = '24px';
+    exportRoot.style.borderRadius = '16px';
+
+    try {
+      await waitForBookImages();
+      const html2canvas = await loadHtml2Canvas();
+      const canvas = await html2canvas(exportRoot, {
+        backgroundColor: '#fff',
+        useCORS: true,
+        scale: Math.min(2, window.devicePixelRatio || 1.5),
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: exportRoot.scrollWidth,
+        windowHeight: exportRoot.scrollHeight,
+      });
+      const dataUrl = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      const safeTitle = (bookTitle.textContent || '魔法小书').replace(/[\\/:*?"<>|]/g, '').trim();
+      a.href = dataUrl;
+      a.download = `${safeTitle || '魔法小书'}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast('✨ 长图已保存到下载~');
+      setTimeout(hideToast, 1500);
+    } catch (e) {
+      appendError('长图生成失败：' + (e.message || e));
+      hideToast();
+    } finally {
+      if (modalContent) modalContent.style.cssText = prevModalStyle;
+      exportRoot.style.cssText = prevRootStyle;
+      if (exportBtn) {
+        exportBtn.disabled = false;
+        exportBtn.textContent = '🖼️ 保存长图';
+      }
+      setBusy(false);
+    }
   }
 
   // ── Thinking report ───────────────────────────────────────────────────────
@@ -941,6 +1160,8 @@
       busy = false;
       window.speechSynthesis && window.speechSynthesis.cancel();
       if (isRecording) stopRecording();
+      hideIncomingCall();
+      incomingShownThisSession = true;
       bookBtn.classList.add('hidden');
       reportBtn.classList.add('hidden');
       chatMessages.innerHTML = '';
@@ -1017,6 +1238,8 @@
     sessionId = null;
     if (isRecording) stopRecording();
     if (isCallMode) stopCallMode();
+    hideIncomingCall();
+    incomingShownThisSession = false;
     window.speechSynthesis && window.speechSynthesis.cancel();
     userInput.disabled = false;
     sendBtn.disabled = false;
@@ -1295,6 +1518,9 @@
   reportBtn.addEventListener('click', makeReport);
   resetBtn.addEventListener('click', reset);
 
+  const exportImageBtn = document.getElementById('exportImageBtn');
+  if (exportImageBtn) exportImageBtn.addEventListener('click', exportBookImage);
+
   // Age selection: pick group → hide modal → start session
   document.querySelectorAll('.age-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -1331,6 +1557,8 @@
 
   callBtn.addEventListener('click', startCallMode);
   hangUpBtn.addEventListener('click', stopCallMode);
+  if (callAcceptBtn) callAcceptBtn.addEventListener('click', acceptIncomingCall);
+  if (callRejectBtn) callRejectBtn.addEventListener('click', rejectIncomingCall);
 
   // ── Boot ──────────────────────────────────────────────────────────────────
   updatePhaseBar(1);

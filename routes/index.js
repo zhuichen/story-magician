@@ -1,4 +1,6 @@
 const express = require('express');
+const https = require('https');
+const http = require('http');
 const router = express.Router();
 
 const aiService = require('../services/aiService');
@@ -15,6 +17,33 @@ const sttService = require('../services/sttService');
 
 router.get('/', (req, res) => {
   res.render('index', { title: '故事魔法师' });
+});
+
+// ============ 图片代理（绕过 html2canvas 跨域污染） ============
+
+router.get('/api/proxy-image', (req, res) => {
+  const url = String(req.query.url || '');
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).send('bad url');
+  }
+  const client = url.startsWith('https://') ? https : http;
+  client
+    .get(url, (upstream) => {
+      if (upstream.statusCode && upstream.statusCode >= 400) {
+        res.status(upstream.statusCode).end();
+        upstream.resume();
+        return;
+      }
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      const ct = upstream.headers['content-type'];
+      if (ct) res.setHeader('Content-Type', ct);
+      upstream.pipe(res);
+    })
+    .on('error', (err) => {
+      console.warn('proxy-image error:', err.message);
+      if (!res.headersSent) res.status(502).end();
+    });
 });
 
 // ============ 会话 ============
@@ -99,7 +128,7 @@ router.post('/api/chat', async (req, res) => {
     });
     const parsed = aiService.extractJson(raw) || {};
 
-    const reply = String(parsed.reply || '我再想想哦～接下来呢？').slice(0, 120);
+    const reply = String(parsed.reply || '我再想想哦～接下来呢？').slice(0, 160);
     let action = parsed.action || 'continue';
     let imagePrompt = parsed.imagePrompt || '';
     const videoPrompt = parsed.videoPrompt || '';
@@ -229,7 +258,7 @@ router.post('/api/chat-stream', async (req, res) => {
     );
 
     const parsed = aiService.extractJson(raw) || {};
-    let reply = String(parsed.reply || '我再想想哦～接下来呢？').slice(0, 120);
+    let reply = String(parsed.reply || '我再想想哦～接下来呢？').slice(0, 160);
     let action = parsed.action || 'continue';
     let imagePrompt = parsed.imagePrompt || '';
     const videoPrompt = parsed.videoPrompt || '';
@@ -264,13 +293,13 @@ router.post('/api/chat-stream', async (req, res) => {
     const endsWithQuestion = /[？?]\s*$/.test(reply);
     if (!endsWithQuestion && action !== 'finalize_book') {
       const followUps = {
-        1: ' 那它长什么样子呀？',
-        2: ' 摸起来会是什么感觉呢？',
-        3: ' 那它会怎么办呢？',
-        4: ' 它现在心里是什么感觉呀？',
+        1: ' 魔法师好想知道，它长什么样子呀？',
+        2: ' 你来告诉魔法师，摸起来会是什么感觉呢？',
+        3: ' 哎呀，那它会怎么办呢？',
+        4: ' 你猜猜看，它现在心里是什么感觉呀？',
       };
-      const append = followUps[session.phase] || ' 接下来呢？';
-      reply = (reply + append).slice(0, 120);
+      const append = followUps[session.phase] || ' 那接下来呢？';
+      reply = (reply + append).slice(0, 160);
       send('delta', { text: append });
     }
 
@@ -411,8 +440,8 @@ router.post('/api/book', async (req, res) => {
 
     const messages = prompts.buildBookMessages(s.history, scenesWithImages);
     const raw = await aiService.chat(messages, {
-      temperature: 0.6,
-      maxTokens: 1800,
+      temperature: 0.7,
+      maxTokens: 2800,
       responseFormat: 'json',
     });
     const book = aiService.extractJson(raw) || {};

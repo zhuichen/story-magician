@@ -697,8 +697,9 @@ html, body {
 
 .book-page-img {
   width: 100%;
-  max-height: 240px;
-  object-fit: cover;
+  height: auto;
+  max-height: 70vh;
+  object-fit: contain;
   display: block;
   background: linear-gradient(135deg, #f3e5f5, #e8f5e9);
 }
@@ -722,10 +723,12 @@ html, body {
 }
 
 .book-page-text {
-  padding: 14px 16px;
-  font-size: 1.05rem;
-  font-weight: 600;
-  line-height: 1.7;
+  padding: 16px 18px;
+  font-size: 1.02rem;
+  font-weight: 500;
+  line-height: 1.85;
+  white-space: pre-wrap;
+  color: #4a3a2c;
 }
 
 .book-page-num {
@@ -746,8 +749,8 @@ html, body {
 }
 
 .btn-print {
-  display: block;
-  margin: 24px auto 0;
+  display: inline-block;
+  margin: 0;
   padding: 12px 32px;
   border-radius: 30px;
   border: none;
@@ -761,6 +764,31 @@ html, body {
 }
 
 .btn-print:hover { transform: scale(1.05); box-shadow: 0 6px 24px rgba(124,77,255,0.4); }
+
+.book-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.btn-export {
+  display: inline-block;
+  padding: 12px 32px;
+  border-radius: 30px;
+  border: none;
+  background: linear-gradient(135deg, #ffb74d, #ff8a65);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(255,138,101,0.35);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.btn-export:hover { transform: scale(1.05); box-shadow: 0 6px 24px rgba(255,138,101,0.45); }
+.btn-export:disabled { opacity: 0.6; cursor: wait; transform: none; }
 
 /* ===== History button ===== */
 .btn-history {
@@ -1204,6 +1232,229 @@ body.call-active .chat-messages {
 /* ===== Utility ===== */
 .hidden { display: none !important; }
 
+/* ===== Incoming WeChat-style call overlay ===== */
+.incoming-call {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: #fff;
+  overflow: hidden;
+  animation: incomingFadeIn 0.28s ease-out both;
+}
+
+.incoming-call.hidden { display: none !important; }
+
+.incoming-call-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(78,168,134,0.55) 0%, transparent 55%),
+    radial-gradient(circle at 80% 100%, rgba(40,90,75,0.6) 0%, transparent 50%),
+    linear-gradient(180deg, #1f3a30 0%, #0f1f1a 100%);
+  z-index: -1;
+}
+
+.incoming-call-topbar {
+  padding: 38px 24px 0;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.incoming-call-app {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.9);
+}
+
+.incoming-call-app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #07c160;
+  font-size: 0.9rem;
+}
+
+.incoming-call-app-sub {
+  font-size: 0.78rem;
+  color: rgba(255,255,255,0.55);
+}
+
+.incoming-call-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 20px;
+}
+
+.incoming-call-avatar-ring {
+  position: relative;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.incoming-call-avatar-ring::before,
+.incoming-call-avatar-ring::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.35);
+  animation: incomingPulse 1.8s ease-out infinite;
+}
+.incoming-call-avatar-ring::after {
+  animation-delay: 0.9s;
+}
+
+.incoming-call-avatar {
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ffe082 0%, #ff9800 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3.5rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+
+.incoming-call-name {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.incoming-call-desc {
+  font-size: 0.95rem;
+  color: rgba(255,255,255,0.7);
+}
+
+.incoming-call-ring-dots {
+  display: inline-flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.incoming-call-ring-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.55);
+  animation: incomingDot 1.2s ease-in-out infinite;
+}
+.incoming-call-ring-dots span:nth-child(2) { animation-delay: 0.2s; }
+.incoming-call-ring-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+.incoming-call-actions {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  padding: 0 32px 56px;
+}
+
+.incoming-call-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  font-family: inherit;
+  padding: 0;
+}
+
+.incoming-call-btn-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.8rem;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.incoming-call-btn-label {
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.85);
+}
+
+.incoming-call-reject .incoming-call-btn-icon {
+  background: #f44336;
+  transform: rotate(135deg);
+}
+.incoming-call-reject .incoming-call-btn-label { transform: none; }
+.incoming-call-reject .incoming-call-btn-icon:hover { box-shadow: 0 8px 20px rgba(244,67,54,0.5); }
+
+.incoming-call-accept .incoming-call-btn-icon {
+  background: #07c160;
+  animation: incomingShake 1.4s ease-in-out infinite;
+}
+.incoming-call-accept .incoming-call-btn-icon:hover {
+  animation-play-state: paused;
+  box-shadow: 0 8px 20px rgba(7,193,96,0.5);
+  transform: scale(1.06);
+}
+
+.incoming-call-btn:active .incoming-call-btn-icon {
+  transform: scale(0.94);
+}
+.incoming-call-reject:active .incoming-call-btn-icon {
+  transform: rotate(135deg) scale(0.94);
+}
+
+@keyframes incomingFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes incomingPulse {
+  0%   { transform: scale(0.85); opacity: 0.7; }
+  100% { transform: scale(1.45); opacity: 0; }
+}
+
+@keyframes incomingDot {
+  0%, 100% { opacity: 0.3; transform: translateY(0); }
+  50%      { opacity: 1;   transform: translateY(-3px); }
+}
+
+@keyframes incomingShake {
+  0%, 100% { transform: rotate(0deg); }
+  20%      { transform: rotate(-12deg); }
+  40%      { transform: rotate(12deg); }
+  60%      { transform: rotate(-8deg); }
+  80%      { transform: rotate(8deg); }
+}
+
+@media (max-width: 480px) {
+  .incoming-call-name { font-size: 1.4rem; }
+  .incoming-call-avatar-ring { width: 110px; height: 110px; }
+  .incoming-call-avatar { width: 92px; height: 92px; font-size: 3rem; }
+  .incoming-call-actions { padding: 0 18px 44px; }
+  .incoming-call-btn-icon { width: 58px; height: 58px; font-size: 1.6rem; }
+}
+
 /* ===== Age selection modal ===== */
 .age-modal {
   text-align: center;
@@ -1281,7 +1532,7 @@ body.call-active .chat-messages {
 
 /* ===== Print ===== */
 @media print {
-  .header, .phase-bar, .chat-panel, .visual-panel, .loading-toast, .modal-close, .btn-print {
+  .header, .phase-bar, .chat-panel, .visual-panel, .loading-toast, .modal-close, .btn-print, .btn-export, .book-actions {
     display: none !important;
   }
   .modal-backdrop {

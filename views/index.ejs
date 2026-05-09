@@ -113,10 +113,15 @@
   <div class="modal-backdrop hidden" id="bookModal">
     <div class="modal-content book-modal">
       <button class="modal-close" id="modalClose">✕</button>
-      <h2 class="book-title" id="bookTitle">✨ 我的魔法小书</h2>
-      <div class="book-pages" id="bookPages"></div>
-      <p class="book-closing" id="bookClosing"></p>
-      <button class="btn-print" onclick="window.print()">🖨️ 打印小书</button>
+      <div id="bookExportRoot">
+        <h2 class="book-title" id="bookTitle">✨ 我的魔法小书</h2>
+        <div class="book-pages" id="bookPages"></div>
+        <p class="book-closing" id="bookClosing"></p>
+      </div>
+      <div class="book-actions">
+        <button class="btn-print" onclick="window.print()">🖨️ 打印小书</button>
+        <button class="btn-export" id="exportImageBtn">🖼️ 保存长图</button>
+      </div>
     </div>
   </div>
 
@@ -179,6 +184,38 @@
       </div>
     </div>
     <button class="call-bar-hangup" id="hangUpBtn">📞 挂断</button>
+  </div>
+
+  <!-- Incoming WeChat-style call overlay (triggered after opening TTS) -->
+  <div class="incoming-call hidden" id="incomingCall" aria-hidden="true">
+    <div class="incoming-call-bg"></div>
+    <div class="incoming-call-topbar">
+      <span class="incoming-call-app">
+        <span class="incoming-call-app-icon">💬</span>
+        <span>微信电话</span>
+      </span>
+      <span class="incoming-call-app-sub">邀请你进行语音通话…</span>
+    </div>
+    <div class="incoming-call-body">
+      <div class="incoming-call-avatar-ring">
+        <div class="incoming-call-avatar">🧙</div>
+      </div>
+      <div class="incoming-call-name">故事魔法师</div>
+      <div class="incoming-call-desc">想和你一起讲故事哦～</div>
+      <div class="incoming-call-ring-dots" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+    <div class="incoming-call-actions">
+      <button class="incoming-call-btn incoming-call-reject" id="callRejectBtn" aria-label="拒接">
+        <span class="incoming-call-btn-icon">📵</span>
+        <span class="incoming-call-btn-label">拒接</span>
+      </button>
+      <button class="incoming-call-btn incoming-call-accept" id="callAcceptBtn" aria-label="接听">
+        <span class="incoming-call-btn-icon">📞</span>
+        <span class="incoming-call-btn-label">接听</span>
+      </button>
+    </div>
   </div>
 
   <script src="/js/app.js"></script>
