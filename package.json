@@ -4,6 +4,7 @@
   "description": "故事魔法师 - 面向3-6岁幼儿的绘本创编伙伴智能体",
   "main": "app.js",
   "scripts": {
+    "build": "echo 'Build skipped for Node.js app'",
     "start": "node app.js",
     "dev": "nodemon app.js",
     "docker:build": "docker build -t story-magician .",
