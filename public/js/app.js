@@ -221,6 +221,15 @@
     return ttsAudioEl;
   }
 
+  function resetTtsAudio() {
+    if (ttsAudioEl) {
+      ttsAudioEl.pause();
+      ttsAudioEl.src = '';
+      ttsAudioEl.load();
+    }
+    ttsAudioEl = null;
+  }
+
   function initCallAudio() {
     if (!callAudioEl) {
       callAudioEl = document.createElement('audio');
@@ -266,11 +275,12 @@
       if (res.ok) {
         const audioBlob = await res.blob();
         const audioUrl = URL.createObjectURL(audioBlob);
+        if (isIOS()) resetTtsAudio();
         const el = initTtsAudio();
         el.src = audioUrl;
         await new Promise((resolve) => {
-          el.onended = () => { el.src = ''; URL.revokeObjectURL(audioUrl); resolve(); };
-          el.onerror = () => { el.src = ''; URL.revokeObjectURL(audioUrl); resolve(); };
+          el.onended = () => { if (isIOS()) resetTtsAudio(); else { el.src = ''; URL.revokeObjectURL(audioUrl); } resolve(); };
+          el.onerror = () => { if (isIOS()) resetTtsAudio(); else { el.src = ''; URL.revokeObjectURL(audioUrl); } resolve(); };
           el.play().catch(() => resolve());
         });
         return;
@@ -280,7 +290,9 @@
     }
 
     if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
+      if (isIOS()) {
+        window.speechSynthesis.cancel();
+      }
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = 'zh-CN';
       utter.rate = 0.95;
@@ -307,7 +319,13 @@
       await new Promise((resolve) => {
         utter.onend = resolve;
         utter.onerror = resolve;
-        window.speechSynthesis.speak(utter);
+        if (isIOS()) {
+          setTimeout(() => {
+            window.speechSynthesis.speak(utter);
+          }, 100);
+        } else {
+          window.speechSynthesis.speak(utter);
+        }
       });
     }
   }
