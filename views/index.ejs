@@ -177,6 +177,31 @@
     </div>
   </div>
 
+  <!-- Mini-game modal -->
+  <div class="modal-backdrop hidden" id="miniGameModal">
+    <div class="modal-content game-modal">
+      <button class="modal-close" id="miniGameClose">✕</button>
+      <h2 class="game-modal-title" id="miniGameTitle">✨ 魔法小关卡</h2>
+      <p class="game-modal-subtitle" id="miniGameSubtitle">魔法师正在为你变出一个小游戏…</p>
+
+      <div class="game-loading-stage" id="miniGameLoading">
+        <div class="game-loading-emoji">🧙</div>
+        <div class="loading-spinner"></div>
+        <div class="game-loading-text" id="miniGameLoadingText">✨ 调配游戏魔法粉…</div>
+        <div class="game-loading-tip">小朋友耐心等一下下哦～</div>
+      </div>
+
+      <div class="game-iframe-wrap hidden" id="miniGameStage">
+        <!-- iframe injected by JS -->
+      </div>
+
+      <div class="game-win-banner hidden" id="miniGameWin">
+        <div class="game-win-emoji">🎉</div>
+        <div class="game-win-text">你太棒啦！</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Loading overlay -->
   <div class="loading-toast hidden" id="loadingToast">
     <span class="loading-spinner"></span>

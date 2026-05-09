@@ -75,6 +75,15 @@
   const callAcceptBtn   = document.getElementById('callAcceptBtn');
   const callRejectBtn   = document.getElementById('callRejectBtn');
 
+  // Mini-game modal refs
+  const miniGameModal       = document.getElementById('miniGameModal');
+  const miniGameClose       = document.getElementById('miniGameClose');
+  const miniGameSubtitle    = document.getElementById('miniGameSubtitle');
+  const miniGameLoading     = document.getElementById('miniGameLoading');
+  const miniGameLoadingText = document.getElementById('miniGameLoadingText');
+  const miniGameStage       = document.getElementById('miniGameStage');
+  const miniGameWin         = document.getElementById('miniGameWin');
+
   // ── Incoming-call: synthesized ringtone ──────────────────────────────────
   let ringCtx = null;
   let ringTimer = null;
@@ -608,16 +617,31 @@
       if (round >= 5) bookBtn.classList.remove('hidden');
       if (round >= 3) reportBtn.classList.remove('hidden');
 
+      let pendingGameScenario = '';
       if (data.action === 'generate_image' && data.imagePrompt) {
         await handleImageGeneration(data.imagePrompt, data.scene || text);
       } else if (data.action === 'generate_video' && data.videoPrompt) {
         await handleVideoGeneration(data.videoPrompt, data.scene || text);
+      } else if (data.action === 'mini_game' && data.gameScenario) {
+        pendingGameScenario = data.gameScenario;
       } else if (data.action === 'finalize_book') {
         bookBtn.classList.remove('hidden');
         shouldAutoBook = true;
       }
 
       await playCallTTS(data.reply);
+
+      if (pendingGameScenario) {
+        setBusy(false);
+        const won = await handleMiniGame(pendingGameScenario);
+        if (won) {
+          const synthetic = await notifyMiniGameDone(pendingGameScenario);
+          if (synthetic && isCallMode) {
+            await sendCallMessage(synthetic);
+          }
+        }
+        return;
+      }
     } catch (e) {
       finalizeStreamingBubble(bubble);
       bubble.textContent = '⚠️ ' + (e.message || '出了点小问题，请再试一次！');
@@ -791,13 +815,29 @@
       if (round >= 5) bookBtn.classList.remove('hidden');
       if (round >= 3) reportBtn.classList.remove('hidden');
 
+      let pendingGameScenario = '';
       if (data.action === 'generate_image' && data.imagePrompt) {
         await handleImageGeneration(data.imagePrompt, data.scene || text);
       } else if (data.action === 'generate_video' && data.videoPrompt) {
         await handleVideoGeneration(data.videoPrompt, data.scene || text);
+      } else if (data.action === 'mini_game' && data.gameScenario) {
+        pendingGameScenario = data.gameScenario;
       } else if (data.action === 'finalize_book') {
         bookBtn.classList.remove('hidden');
         shouldAutoBook = true;
+      }
+
+      if (pendingGameScenario) {
+        setBusy(false);
+        const won = await handleMiniGame(pendingGameScenario);
+        if (won) {
+          const synthetic = await notifyMiniGameDone(pendingGameScenario);
+          if (synthetic) {
+            userInput.value = synthetic;
+            await sendMessage();
+          }
+        }
+        return;
       }
     } catch (e) {
       finalizeStreamingBubble(bubble);
@@ -888,6 +928,150 @@
     `;
     chatMediaEl.innerHTML = `<video src="${escHtml(url)}" controls muted loop playsinline style="max-width:240px;border-radius:12px;"></video>`;
     hideGalleryEmpty();
+  }
+
+  // ── Mini game (AI-generated HTML in sandboxed iframe) ─────────────────────
+  let gameOpen = false;
+  let gameWonResolver = null;
+  let gameLoadingTextTimer = null;
+
+  const GAME_LOADING_LINES = [
+    '✨ 调配游戏魔法粉…',
+    '🧙 捏一个小关卡…',
+    '🎨 上色…',
+    '🌈 马上就好啦～',
+  ];
+
+  function startGameLoadingMessages() {
+    let i = 0;
+    miniGameLoadingText.textContent = GAME_LOADING_LINES[0];
+    if (gameLoadingTextTimer) clearInterval(gameLoadingTextTimer);
+    gameLoadingTextTimer = setInterval(() => {
+      i = (i + 1) % GAME_LOADING_LINES.length;
+      miniGameLoadingText.textContent = GAME_LOADING_LINES[i];
+    }, 1100);
+  }
+
+  function stopGameLoadingMessages() {
+    if (gameLoadingTextTimer) {
+      clearInterval(gameLoadingTextTimer);
+      gameLoadingTextTimer = null;
+    }
+  }
+
+  function showGameModal() {
+    miniGameModal.classList.remove('hidden');
+    miniGameLoading.classList.remove('hidden');
+    miniGameStage.classList.add('hidden');
+    miniGameStage.innerHTML = '';
+    miniGameWin.classList.add('hidden');
+    miniGameSubtitle.textContent = '魔法师正在为你变出一个小游戏…';
+    startGameLoadingMessages();
+    gameOpen = true;
+  }
+
+  function hideGameModal() {
+    miniGameModal.classList.add('hidden');
+    miniGameStage.innerHTML = '';
+    stopGameLoadingMessages();
+    gameOpen = false;
+  }
+
+  function showGameError(msg) {
+    stopGameLoadingMessages();
+    miniGameLoading.classList.add('hidden');
+    miniGameStage.classList.remove('hidden');
+    miniGameStage.innerHTML = `<div class="game-error-msg">😅 ${escHtml(msg)}</div>`;
+    miniGameSubtitle.textContent = '我们继续讲故事吧～';
+  }
+
+  async function handleMiniGame(scenario) {
+    if (gameOpen) return false;
+
+    // 暂停电话模式录音 / 输入 TTS（不要打断已经在播的旁白朗读）
+    const wasCallMode = isCallMode;
+    if (isCallMode) {
+      try { if (callAudio) callAudio.pause(); } catch (_) {}
+      setCallState('idle');
+      callStatus.textContent = '小游戏暂停一下哦～';
+    }
+
+    showGameModal();
+
+    // 1) 请求 AI 生成游戏 HTML
+    let html = '';
+    try {
+      const res = await apiFetch('/api/mini-game', 'POST', { sessionId, scenario });
+      html = String(res.html || '').trim();
+    } catch (e) {
+      showGameError('魔法有点累啦，我们继续讲故事～');
+      await new Promise((r) => setTimeout(r, 1800));
+      hideGameModal();
+      if (wasCallMode && isCallMode) startCallRecording();
+      return false;
+    }
+
+    if (!html) {
+      showGameError('魔法有点累啦，我们继续讲故事～');
+      await new Promise((r) => setTimeout(r, 1800));
+      hideGameModal();
+      if (wasCallMode && isCallMode) startCallRecording();
+      return false;
+    }
+
+    // 2) 注入 iframe（沙箱 only allow-scripts，不给 same-origin）
+    stopGameLoadingMessages();
+    miniGameLoading.classList.add('hidden');
+    miniGameStage.classList.remove('hidden');
+    miniGameSubtitle.textContent = '快来帮一下小伙伴吧～';
+
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('sandbox', 'allow-scripts');
+    iframe.setAttribute('title', '魔法小游戏');
+    iframe.srcdoc = html;
+    miniGameStage.appendChild(iframe);
+
+    // 3) 等待通关
+    const won = await new Promise((resolve) => {
+      gameWonResolver = resolve;
+      // 兜底：60s 仍未通关，自动关闭并继续
+      setTimeout(() => {
+        if (gameWonResolver === resolve) {
+          gameWonResolver = null;
+          resolve(false);
+        }
+      }, 90000);
+    });
+
+    if (won) {
+      miniGameWin.classList.remove('hidden');
+      await new Promise((r) => setTimeout(r, 1100));
+    }
+    hideGameModal();
+
+    if (wasCallMode && isCallMode) startCallRecording();
+    return won;
+  }
+
+  // 从 iframe 接收通关消息
+  window.addEventListener('message', (e) => {
+    if (!e.data || typeof e.data !== 'object') return;
+    if (e.data.type !== 'sm-game') return;
+    if (e.data.event === 'win' && gameWonResolver) {
+      const r = gameWonResolver;
+      gameWonResolver = null;
+      r(true);
+    }
+  });
+
+  async function notifyMiniGameDone(scenario) {
+    try {
+      const res = await apiFetch('/api/mini-game/done', 'POST', { sessionId, scenario });
+      return res.syntheticInput || '';
+    } catch (e) {
+      console.warn('mini-game/done 失败:', e.message);
+      return '';
+    }
   }
 
   // ── Make book ─────────────────────────────────────────────────────────────
@@ -1665,6 +1849,16 @@
   modalClose.addEventListener('click', () => bookModal.classList.add('hidden'));
   bookModal.addEventListener('click', (e) => {
     if (e.target === bookModal) bookModal.classList.add('hidden');
+  });
+
+  // Mini-game modal: 关闭按钮等价于"放弃通关"
+  miniGameClose.addEventListener('click', () => {
+    if (gameWonResolver) {
+      const r = gameWonResolver;
+      gameWonResolver = null;
+      r(false);
+    }
+    hideGameModal();
   });
 
   reportModalClose.addEventListener('click', () => reportModal.classList.add('hidden'));

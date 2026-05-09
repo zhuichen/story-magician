@@ -17,6 +17,7 @@ function newSession(ageGroup = '4-5') {
     ageGroup,   // 年龄组 '3-4' | '4-5' | '5-6'
     emotionRounds: 0,         // 已完成的情绪反思问答轮数（ask_emotion 后孩子给出回答 +1）
     lastAction: '',           // 上一轮 AI 的 action
+    gamePlayed: false,        // 是否已触发并完成过迷你小游戏（每个会话最多 1 次）
   };
   SESSIONS.set(id, session);
   pruneIfNeeded();

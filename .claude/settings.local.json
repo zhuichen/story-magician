@@ -20,7 +20,24 @@
       "Bash(curl -sf http://localhost:3201/ -o /dev/null)",
       "Bash(curl -s -o /tmp/page.html -w \"HTTP %{http_code} size=%{size_download}\\\\n\" http://localhost:3201/)",
       "Bash(curl -s -o /tmp/page.css -w \"CSS HTTP %{http_code} size=%{size_download}\\\\n\" http://localhost:3201/css/style.css)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(node --check services/prompts.js)",
+      "Bash(node --check services/gameService.js)",
+      "Bash(node --check services/sessionStore.js)",
+      "Bash(node --check services/historyService.js)",
+      "Bash(node --check routes/index.js)",
+      "Bash(PORT=3299 node app.js)",
+      "Bash(curl -fsS http://localhost:3299/ -o /tmp/sm-index.html)",
+      "Bash(grep -c \"miniGameModal\\\\|miniGameClose\\\\|miniGameStage\\\\|miniGameLoading\\\\|miniGameWin\" /tmp/sm-index.html)",
+      "Read(//private/tmp/**)",
+      "Bash(curl -s -X POST http://localhost:3299/api/mini-game -H \"Content-Type: application/json\" -d '{\"sessionId\":\"none\",\"scenario\":\"test\"}')",
+      "Bash(curl -s -X POST http://localhost:3299/api/mini-game/done -H \"Content-Type: application/json\" -d '{\"sessionId\":\"none\"}')",
+      "Bash(curl -s -X POST http://localhost:3299/api/session -H \"Content-Type: application/json\" -d '{\"ageGroup\":\"4-5\"}')",
+      "Bash(node --check public/js/app.js)",
+      "Bash(node --check /Users/luoruiqi/Documents/work/code/tech_code/story-magician/services/prompts.js)",
+      "Bash(node --check /Users/luoruiqi/Documents/work/code/tech_code/story-magician/services/gameService.js)",
+      "Bash(curl -fsS http://localhost:3299/ -o /dev/null)",
+      "Bash(curl -s -X POST http://localhost:3299/api/session -H \"Content-Type: application/json\" -d '{\"ageGroup\":\"3-4\"}')"
     ]
   }
 }

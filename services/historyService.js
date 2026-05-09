@@ -27,6 +27,7 @@ function saveHistory(session) {
       scenes: session.scenes,
       ageGroup: session.ageGroup || '4-5',
       phase: session.phase || 1,
+      gamePlayed: !!session.gamePlayed,
     };
     fs.writeFileSync(
       path.join(HISTORY_DIR, `${session.id}.json`),

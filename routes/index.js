@@ -12,6 +12,7 @@ const videoService = require('../services/videoService');
 const historyService = require('../services/historyService');
 const ttsService = require('../services/ttsService');
 const sttService = require('../services/sttService');
+const gameService = require('../services/gameService');
 
 // ============ 页面 ============
 
@@ -148,6 +149,15 @@ router.post('/api/chat', async (req, res) => {
       imagePrompt = videoPrompt || imagePrompt;
     }
 
+    // mini_game 护栏：每个会话最多 1 次；Phase 1 / Phase 4 不允许触发
+    let gameScenario = parsed.gameScenario || '';
+    if (action === 'mini_game') {
+      if (session.gamePlayed || session.phase === 1 || session.phase >= 4 || !gameScenario.trim()) {
+        action = 'continue';
+        gameScenario = '';
+      }
+    }
+
     // 3) 写入历史（用户侧保存改写后的安全版本）
     session.history.push({ role: 'user', content: safeInput });
     session.history.push({ role: 'assistant', content: reply });
@@ -160,6 +170,7 @@ router.post('/api/chat', async (req, res) => {
       action,
       imagePrompt,
       videoPrompt,
+      gameScenario,
       scene,
       emotionQuestion,
       sanitized: replaced,
@@ -258,7 +269,12 @@ router.post('/api/chat-stream', async (req, res) => {
     );
 
     const parsed = aiService.extractJson(raw) || {};
-    let reply = String(parsed.reply || '我再想想哦～接下来呢？').slice(0, 160);
+    // 兜底文案：检测"刚通关"信号，避免回成"我再想想哦"这种空回复
+    const isPostGame = /^我做到啦|完成啦|通关啦|搭好啦|叠好啦|救出来啦|我成功/.test(safeInput || '');
+    const fallbackReply = isPostGame
+      ? '哎呀宝贝你真是小英雄！故事里的小伙伴在你帮助下顺利脱险啦～接下来你想让它做什么呀？'
+      : '我再想想哦～接下来呢？';
+    let reply = String(parsed.reply || fallbackReply).slice(0, 160);
     let action = parsed.action || 'continue';
     let imagePrompt = parsed.imagePrompt || '';
     const videoPrompt = parsed.videoPrompt || '';
@@ -272,6 +288,15 @@ router.post('/api/chat-stream', async (req, res) => {
     if (!videoEnabled && action === 'generate_video') {
       action = 'generate_image';
       imagePrompt = videoPrompt || imagePrompt;
+    }
+
+    // mini_game 护栏：每个会话最多 1 次；Phase 1 / Phase 4 不允许触发
+    let gameScenario = parsed.gameScenario || '';
+    if (action === 'mini_game') {
+      if (session.gamePlayed || session.phase === 1 || session.phase >= 4 || !gameScenario.trim()) {
+        action = 'continue';
+        gameScenario = '';
+      }
     }
 
     // 强制护栏：在情绪反思至少完成 1 轮之前，禁止 finalize_book
@@ -314,6 +339,7 @@ router.post('/api/chat-stream', async (req, res) => {
       action,
       imagePrompt,
       videoPrompt,
+      gameScenario,
       scene,
       emotionQuestion,
       sanitized: replaced,
@@ -586,6 +612,57 @@ router.post('/api/report', async (req, res) => {
   }
 });
 
+// ============ 迷你游戏（AI 生成 + 通关回写） ============
+
+router.post('/api/mini-game', async (req, res) => {
+  try {
+    const { sessionId, scenario } = req.body;
+    const s = sessionStore.getSession(sessionId);
+    if (!s) return res.status(404).json({ error: '会话已过期' });
+    if (s.gamePlayed) return res.status(400).json({ error: '本次故事已经玩过游戏啦' });
+    if (!scenario || !String(scenario).trim()) {
+      return res.status(400).json({ error: '缺少游戏剧情说明' });
+    }
+
+    // 取最近 6 轮对话作为上下文（让 AI 复刻主角与场景）
+    const recent = (s.history || []).slice(-12)
+      .map((h) => `${h.role === 'user' ? '小朋友' : '魔法师'}：${h.content}`)
+      .join('\n');
+
+    const { html } = await gameService.generateMiniGame(
+      String(scenario).trim(),
+      s.ageGroup || '4-5',
+      recent
+    );
+    res.json({ html });
+  } catch (err) {
+    console.error('mini-game 失败:', err.message);
+    res.status(500).json({ error: err.message || '游戏生成失败' });
+  }
+});
+
+router.post('/api/mini-game/done', (req, res) => {
+  try {
+    const { sessionId, scenario } = req.body;
+    const s = sessionStore.getSession(sessionId);
+    if (!s) return res.status(404).json({ error: '会话已过期' });
+
+    s.gamePlayed = true;
+    // 合成消息要"像孩子说的话"，AI 才能正确接话——避免书名号、括号、meta 描述
+    const desc = (scenario && String(scenario).trim()) || '';
+    const synthetic = desc
+      ? `我做到啦！${desc}！`
+      : '我做到啦！我帮到故事里的小伙伴啦！';
+    sessionStore.touch(sessionId);
+    historyService.saveHistory(s);
+
+    res.json({ syntheticInput: synthetic });
+  } catch (err) {
+    console.error('mini-game/done 失败:', err.message);
+    res.status(500).json({ error: err.message || '通关写入失败' });
+  }
+});
+
 // ============ 历史会话 ============
 
 router.get('/api/histories', (req, res) => {
@@ -616,6 +693,7 @@ router.post('/api/histories/:id/resume', (req, res) => {
   // 恢复情绪反思计数：粗略估计——若 phase 已到 4，认为至少做过 1 轮
   s.emotionRounds = s.phase >= 4 ? 1 : 0;
   s.lastAction = '';
+  s.gamePlayed = !!data.gamePlayed;
 
   res.json({
     sessionId: s.id,
