@@ -425,6 +425,49 @@ router.get('/api/video/:taskId', async (req, res) => {
   }
 });
 
+// ============ 魔法小书动画（多图 + 文案） ============
+
+router.post('/api/book-video', async (req, res) => {
+  try {
+    const { sessionId, imageUrls, prompt } = req.body;
+    const s = sessionStore.getSession(sessionId);
+    if (!s) return res.status(404).json({ error: '会话已过期' });
+    if (!Array.isArray(imageUrls) || !imageUrls.length) {
+      return res.status(400).json({ error: '需要先生成魔法小书的插图' });
+    }
+
+    if (s.bookVideoUrl) {
+      return res.json({ mode: 'cached', videoUrl: s.bookVideoUrl });
+    }
+
+    const result = await videoService.createBookVideo(imageUrls, prompt || '');
+    s.bookVideoTaskId = result.taskId;
+    historyService.saveHistory(s);
+    res.json(result);
+  } catch (err) {
+    console.error('book-video 失败:', err.apiResponse || err.message);
+    const status = err.code === 'CREDS_MISSING' ? 500 : 400;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+router.get('/api/book-video/:taskId', async (req, res) => {
+  try {
+    const { sessionId } = req.query;
+    const data = await videoService.queryBookVideo(req.params.taskId);
+    if (data.status === 'done' && data.videoUrl && sessionId) {
+      const s = sessionStore.getSession(sessionId);
+      if (s) {
+        s.bookVideoUrl = data.videoUrl;
+        historyService.saveHistory(s);
+      }
+    }
+    res.json(data);
+  } catch (err) {
+    res.status(400).json({ error: err.message, apiCode: err.apiCode });
+  }
+});
+
 // ============ 整理成图文小书 ============
 
 router.post('/api/book', async (req, res) => {

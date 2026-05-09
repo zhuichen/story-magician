@@ -25,6 +25,8 @@
   let callPcmChunks = [];
   let callInputSampleRate = 0;
   let callRecordStartTime = 0;
+  let cachedBook = null;
+  let bookVideoUrl = null;
 
   // ── DOM refs ────────────────────────────────────────────────────────────────
   const chatMessages = document.getElementById('chatMessages');
@@ -891,11 +893,19 @@
   // ── Make book ─────────────────────────────────────────────────────────────
   async function makeBook() {
     if (busy) return;
+
+    if (cachedBook) {
+      renderBook(cachedBook);
+      bookModal.classList.remove('hidden');
+      return;
+    }
+
     setBusy(true);
     showToast('✨ 正在整理你的魔法小书…');
 
     try {
       const data = await apiFetch('/api/book', 'POST', { sessionId });
+      cachedBook = data.book;
       renderBook(data.book);
       bookModal.classList.remove('hidden');
     } catch (e) {
@@ -941,6 +951,7 @@
     });
 
     bookClosing.textContent = book.closing || '';
+    refreshAnimButton();
   }
 
   // ── Export book as a long image ──────────────────────────────────────────
@@ -1034,7 +1045,119 @@
     }
   }
 
-  // ── Thinking report ───────────────────────────────────────────────────────
+  // ── Book animation (multi-image to video) ───────────────────────────────
+  const bookAnimArea   = document.getElementById('bookAnimArea');
+  const bookAnimStatus = document.getElementById('bookAnimStatus');
+  const bookAnimVideo  = document.getElementById('bookAnimVideo');
+  const generateAnimBtn = document.getElementById('generateAnimBtn');
+
+  function refreshAnimButton() {
+    if (!generateAnimBtn) return;
+    const hasBook = !!cachedBook;
+    generateAnimBtn.disabled = !hasBook;
+    generateAnimBtn.title = hasBook ? '把魔法小书变成动画' : '请先制作魔法小书';
+
+    if (!bookAnimArea) return;
+    if (bookVideoUrl) {
+      bookAnimArea.classList.remove('hidden');
+      bookAnimVideo.classList.remove('hidden');
+      bookAnimVideo.src = bookVideoUrl;
+      bookAnimStatus.textContent = '🎬 动画已生成';
+      generateAnimBtn.textContent = '🎬 重新观看动画';
+    } else {
+      bookAnimArea.classList.add('hidden');
+      bookAnimVideo.classList.add('hidden');
+      bookAnimVideo.removeAttribute('src');
+      bookAnimStatus.textContent = '';
+      generateAnimBtn.textContent = '🎬 生成动画';
+    }
+  }
+
+  function buildBookAnimPayload() {
+    const pages = (cachedBook && cachedBook.pages) || [];
+    const imageUrls = [];
+    const texts = [];
+    pages.forEach((p) => {
+      if (p.imageUrl && /^https?:\/\//i.test(p.imageUrl)) {
+        imageUrls.push(p.imageUrl);
+        if (p.text) texts.push(String(p.text));
+      }
+    });
+    const title = (cachedBook && cachedBook.title) || '魔法小书';
+    const promptParts = [`故事《${title}》分镜动画。`];
+    if (texts.length) promptParts.push(texts.join(' '));
+    if (cachedBook && cachedBook.closing) promptParts.push(String(cachedBook.closing));
+    return { imageUrls, prompt: promptParts.join(' ').slice(0, 1800) };
+  }
+
+  async function makeBookVideo() {
+    if (busy || !cachedBook) return;
+
+    if (bookVideoUrl) {
+      bookAnimArea.classList.remove('hidden');
+      bookAnimVideo.classList.remove('hidden');
+      bookAnimVideo.src = bookVideoUrl;
+      bookAnimVideo.play().catch(() => {});
+      return;
+    }
+
+    const { imageUrls, prompt } = buildBookAnimPayload();
+    if (!imageUrls.length) {
+      appendError('魔法小书还没有插图，无法生成动画');
+      return;
+    }
+
+    setBusy(true);
+    generateAnimBtn.disabled = true;
+    generateAnimBtn.textContent = '🎬 提交中…';
+    bookAnimArea.classList.remove('hidden');
+    bookAnimVideo.classList.add('hidden');
+    bookAnimStatus.innerHTML = '<span class="loading-spinner"></span><span>动画施法中，最长约 5 分钟…</span>';
+
+    try {
+      const data = await apiFetch('/api/book-video', 'POST', {
+        sessionId, imageUrls, prompt,
+      });
+
+      if (data.mode === 'cached' && data.videoUrl) {
+        bookVideoUrl = data.videoUrl;
+        refreshAnimButton();
+        return;
+      }
+      if (!data.taskId) throw new Error('动画提交失败');
+
+      // 5 分钟超时；每 10 秒轮询一次 ⇒ 最多 30 次
+      await pollTask(
+        '/api/book-video/',
+        data.taskId,
+        (result) => {
+          if (result.status === 'done' && result.videoUrl) {
+            bookVideoUrl = result.videoUrl;
+            return true;
+          }
+          if (result.status === 'failed') {
+            throw new Error('动画生成失败');
+          }
+          return false;
+        },
+        10000,
+        30,
+        { sessionId },
+      );
+
+      refreshAnimButton();
+      bookAnimVideo.play().catch(() => {});
+    } catch (e) {
+      bookAnimStatus.textContent = '⚠️ ' + (e.message || '动画生成失败');
+      generateAnimBtn.disabled = false;
+      generateAnimBtn.textContent = '🎬 重试生成';
+    } finally {
+      setBusy(false);
+      if (bookVideoUrl) generateAnimBtn.disabled = false;
+    }
+  }
+
+
   async function makeReport() {
     if (busy) return;
     setBusy(true);
@@ -1158,6 +1281,9 @@
       // Reset UI state
       round = 0;
       busy = false;
+      cachedBook = null;
+      bookVideoUrl = null;
+      refreshAnimButton();
       window.speechSynthesis && window.speechSynthesis.cancel();
       if (isRecording) stopRecording();
       hideIncomingCall();
@@ -1236,6 +1362,9 @@
     round = 0;
     busy = false;
     sessionId = null;
+    cachedBook = null;
+    bookVideoUrl = null;
+    refreshAnimButton();
     if (isRecording) stopRecording();
     if (isCallMode) stopCallMode();
     hideIncomingCall();
@@ -1520,6 +1649,7 @@
 
   const exportImageBtn = document.getElementById('exportImageBtn');
   if (exportImageBtn) exportImageBtn.addEventListener('click', exportBookImage);
+  if (generateAnimBtn) generateAnimBtn.addEventListener('click', makeBookVideo);
 
   // Age selection: pick group → hide modal → start session
   document.querySelectorAll('.age-btn').forEach((btn) => {
@@ -1563,5 +1693,6 @@
   // ── Boot ──────────────────────────────────────────────────────────────────
   updatePhaseBar(1);
   initSpeechRecognition();
+  refreshAnimButton();
   showAgeModal();
 })();

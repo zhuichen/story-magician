@@ -121,6 +121,11 @@
       <div class="book-actions">
         <button class="btn-print" onclick="window.print()">🖨️ 打印小书</button>
         <button class="btn-export" id="exportImageBtn">🖼️ 保存长图</button>
+        <button class="btn-anim" id="generateAnimBtn">🎬 生成动画</button>
+      </div>
+      <div class="book-anim-area hidden" id="bookAnimArea">
+        <div class="book-anim-status" id="bookAnimStatus"></div>
+        <video class="book-anim-video hidden" id="bookAnimVideo" controls playsinline></video>
       </div>
     </div>
   </div>

@@ -790,6 +790,45 @@ html, body {
 .btn-export:hover { transform: scale(1.05); box-shadow: 0 6px 24px rgba(255,138,101,0.45); }
 .btn-export:disabled { opacity: 0.6; cursor: wait; transform: none; }
 
+.btn-anim {
+  display: inline-block;
+  padding: 12px 32px;
+  border-radius: 30px;
+  border: none;
+  background: linear-gradient(135deg, #4fc3f7, #1976d2);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(25,118,210,0.35);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.btn-anim:hover { transform: scale(1.05); box-shadow: 0 6px 24px rgba(25,118,210,0.45); }
+.btn-anim:disabled { opacity: 0.6; cursor: wait; transform: none; }
+
+.book-anim-area {
+  margin-top: 20px;
+  padding: 16px;
+  border-radius: 16px;
+  background: #f5fbff;
+  text-align: center;
+}
+.book-anim-status {
+  font-size: 0.95rem;
+  color: #1976d2;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.book-anim-video {
+  width: 100%;
+  max-width: 640px;
+  border-radius: 12px;
+  background: #000;
+}
+
 /* ===== History button ===== */
 .btn-history {
   padding: 6px 14px;
