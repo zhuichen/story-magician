@@ -14,7 +14,13 @@
       "Bash(node --check /Users/luoruiqi/Documents/work/code/tech_code/story-magician/routes/index.js)",
       "Bash(timeout 360 node test_book_video.js)",
       "Bash(tee /tmp/book_video_probe.log)",
-      "Bash(node /Users/luoruiqi/Documents/work/code/tech_code/story-magician/test_book_video.js)"
+      "Bash(node /Users/luoruiqi/Documents/work/code/tech_code/story-magician/test_book_video.js)",
+      "Bash(lsof -nP -iTCP:3200 -sTCP:LISTEN)",
+      "Bash(PORT=3201 npm start)",
+      "Bash(curl -sf http://localhost:3201/ -o /dev/null)",
+      "Bash(curl -s -o /tmp/page.html -w \"HTTP %{http_code} size=%{size_download}\\\\n\" http://localhost:3201/)",
+      "Bash(curl -s -o /tmp/page.css -w \"CSS HTTP %{http_code} size=%{size_download}\\\\n\" http://localhost:3201/css/style.css)",
+      "Read(//tmp/**)"
     ]
   }
 }
