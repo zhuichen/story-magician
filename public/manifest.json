@@ -1,0 +1,27 @@
+{
+  "name": "故事魔法师",
+  "short_name": "故事魔法师",
+  "description": "面向3-6岁幼儿的绘本创编伙伴智能体",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFF8E7",
+  "theme_color": "#FF6FA8",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "entertainment"],
+  "lang": "zh-CN",
+  "prefer_related_applications": false
+}

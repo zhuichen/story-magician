@@ -2197,6 +2197,57 @@ body.call-active .chat-messages   { padding-bottom: 70px; }
 }
 
 /* ===== 19. 响应式 ===== */
+/* iPad Mini (768px) 适配 */
+@media (min-width: 768px) and (max-width: 1024px) {
+  :root {
+    --fs-base:    17px;
+    --fs-lg:      21px;
+    --fs-xl:      26px;
+    --fs-display: 34px;
+  }
+  .main {
+    grid-template-columns: 1fr 320px;
+    height: calc(100vh - 76px - 70px);
+  }
+  .header { padding: 14px 20px 18px; }
+  .header-title { font-size: var(--fs-xl); }
+  .header-sub { display: none; }
+  .phase-bar { top: 80px; }
+  .msg-avatar { width: 52px; height: 52px; font-size: 1.6rem; }
+  .msg-bubble { padding: 16px 20px; }
+  .btn-mic, .btn-send { width: 56px; height: 56px; }
+  .chat-input { padding: 12px 18px; }
+  .gallery-card img, .gallery-card video { max-height: 240px; }
+}
+
+/* iPad Air/Pro (1024px+) 横屏适配 */
+@media (min-width: 1024px) {
+  :root {
+    --fs-base:    18px;
+    --fs-lg:      22px;
+    --fs-xl:      28px;
+    --fs-display: 36px;
+  }
+  .main {
+    grid-template-columns: 1fr 380px;
+    height: calc(100vh - 80px - 74px);
+  }
+  .header { padding: 16px 24px 20px; }
+  .header-sub { display: inline; font-size: var(--fs-xs); }
+  .phase-bar { top: 84px; padding: 16px 20px; }
+  .msg-avatar { width: 56px; height: 56px; font-size: 1.8rem; }
+  .btn-mic, .btn-send { width: 60px; height: 60px; }
+  .gallery-card img, .gallery-card video { max-height: 280px; }
+}
+
+/* iPad 横屏时画廊可以更宽 */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .main {
+    grid-template-columns: 1fr 400px;
+  }
+  .gallery-card img, .gallery-card video { max-height: 320px; }
+}
+
 @media (max-width: 768px) {
   :root {
     --fs-base:    17px;
