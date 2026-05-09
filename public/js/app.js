@@ -29,7 +29,6 @@
   let callProcessor = null;
   let callAudioCtx = null;
   let callAnalyser = null;
-  let callAudio = null;
   let callState = 'idle';
   let callSilenceStart = 0;
   let callHasSpeech = false;
@@ -208,55 +207,54 @@
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   }
 
-  // ── Voice: TTS ────────────────────────────────────────────────────────────
-  let cachedTtsAudio = null;
+  let ttsAudioEl = null;
+  let callAudioEl = null;
+  let audioUnlocked = false;
 
-  function preloadTtsAudio(text) {
-    if (!text) return;
-    if (cachedTtsAudio) {
-      cachedTtsAudio.pause();
-      URL.revokeObjectURL(cachedTtsAudio.src);
+  function initTtsAudio() {
+    if (!ttsAudioEl) {
+      ttsAudioEl = document.createElement('audio');
+      ttsAudioEl.preload = 'none';
+      ttsAudioEl.setAttribute('playsinline', '');
+      ttsAudioEl.setAttribute('webkit-playsinline', '');
     }
-    cachedTtsAudio = null;
-    fetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    })
-      .then(res => res.ok ? res.blob() : null)
-      .then(blob => {
-        if (blob) {
-          cachedTtsAudio = new Audio(URL.createObjectURL(blob));
-          cachedTtsAudio.preload = 'none';
-        }
-      })
-      .catch(() => {});
+    return ttsAudioEl;
   }
 
-  async function speakText(html, forceInteractionContext = false) {
+  function initCallAudio() {
+    if (!callAudioEl) {
+      callAudioEl = document.createElement('audio');
+      callAudioEl.preload = 'none';
+      callAudioEl.setAttribute('playsinline', '');
+      callAudioEl.setAttribute('webkit-playsinline', '');
+    }
+    return callAudioEl;
+  }
+
+  async function unlockAudio() {
+    if (audioUnlocked) return;
+    if (!isIOS()) {
+      audioUnlocked = true;
+      return;
+    }
+    try {
+      const el = initTtsAudio();
+      await el.play();
+      el.pause();
+      el.currentTime = 0;
+      audioUnlocked = true;
+    } catch (_) {}
+  }
+
+  // ── Voice: TTS ────────────────────────────────────────────────────────────
+
+  async function speakText(html) {
     if (!ttsEnabled) return;
 
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
     const text = (tmp.textContent || tmp.innerText || '').trim();
     if (!text) return;
-
-    const playOptions = {};
-    if (forceInteractionContext || isIOS()) {
-      playOptions.autoplay = false;
-    }
-
-    const tryPlayAudio = (audio) => {
-      return audio.play().catch(e => {
-        if (isIOS()) {
-          const resumePromise = audio.play();
-          if (resumePromise !== undefined) {
-            return resumePromise.catch(() => {});
-          }
-        }
-        return Promise.reject(e);
-      });
-    };
 
     try {
       const res = await fetch('/api/tts', {
@@ -268,20 +266,12 @@
       if (res.ok) {
         const audioBlob = await res.blob();
         const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio(audioUrl);
-        audio.preload = 'auto';
+        const el = initTtsAudio();
+        el.src = audioUrl;
         await new Promise((resolve) => {
-          audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(); };
-          audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(); };
-          tryPlayAudio(audio).then(() => {
-            if (isIOS() && audio.paused) {
-              const canvas = document.createElement('canvas');
-              canvas.width = 1;
-              canvas.height = 1;
-              canvas.getContext('2d');
-              canvas.addEventListener('click', () => {}, { once: true });
-            }
-          }).catch(() => resolve());
+          el.onended = () => { el.src = ''; URL.revokeObjectURL(audioUrl); resolve(); };
+          el.onerror = () => { el.src = ''; URL.revokeObjectURL(audioUrl); resolve(); };
+          el.play().catch(() => resolve());
         });
         return;
       }
@@ -327,7 +317,9 @@
     ttsBtn.textContent = ttsEnabled ? '🔊 语音' : '🔇 语音';
     ttsBtn.title = ttsEnabled ? '关闭语音播报' : '开启语音播报';
     ttsBtn.classList.toggle('tts-off', !ttsEnabled);
-    if (!ttsEnabled) window.speechSynthesis.cancel();
+    if (!ttsEnabled && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
   }
 
   // ── Voice: STT ────────────────────────────────────────────────────────────
@@ -341,7 +333,7 @@
     recognition.onresult = (e) => {
       userInput.value = e.results[0][0].transcript;
       stopRecording();
-      userInput.focus();
+      if (!isIOS()) userInput.focus();
     };
     recognition.onerror = () => stopRecording();
     recognition.onend = () => stopRecording();
@@ -623,10 +615,9 @@
       callAnimFrame = null;
     }
 
-    if (callAudio) {
-      callAudio.pause();
-      callAudio.currentTime = 0;
-      callAudio = null;
+    if (callAudioEl) {
+      callAudioEl.pause();
+      callAudioEl.src = '';
     }
 
     if (callProcessor) {
@@ -738,10 +729,6 @@
     const plainText = text.replace(/<[^>]*>/g, '').trim();
     if (!plainText) return;
 
-    const tryPlayAudio = (audio) => {
-      return audio.play().catch(() => {});
-    };
-
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
@@ -752,20 +739,27 @@
       if (res.ok) {
         const audioBlob = await res.blob();
         const audioUrl = URL.createObjectURL(audioBlob);
-        callAudio = new Audio(audioUrl);
+        const el = initCallAudio();
+        const prevOnEnd = el.onended;
+        const prevOnErr = el.onerror;
+        el.src = audioUrl;
 
         await new Promise((resolve) => {
-          callAudio.onended = () => {
+          el.onended = () => {
+            el.src = '';
             URL.revokeObjectURL(audioUrl);
-            callAudio = null;
+            el.onended = prevOnEnd;
+            el.onerror = prevOnErr;
             resolve();
           };
-          callAudio.onerror = () => {
+          el.onerror = () => {
+            el.src = '';
             URL.revokeObjectURL(audioUrl);
-            callAudio = null;
+            el.onended = prevOnEnd;
+            el.onerror = prevOnErr;
             resolve();
           };
-          tryPlayAudio(callAudio).catch(() => resolve());
+          el.play().catch(() => resolve());
         });
         return;
       }
@@ -1073,7 +1067,7 @@
     // 暂停电话模式录音 / 输入 TTS（不要打断已经在播的旁白朗读）
     const wasCallMode = isCallMode;
     if (isCallMode) {
-      try { if (callAudio) callAudio.pause(); } catch (_) {}
+      try { if (callAudioEl) callAudioEl.pause(); } catch (_) {}
       setCallState('idle');
       callStatus.textContent = '小游戏暂停一下哦～';
     }
@@ -1603,7 +1597,7 @@
       appendAssistantMsg('✨ 故事恢复啦！我们继续冒险吧～有什么想说的？');
       userInput.disabled = false;
       sendBtn.disabled = false;
-      userInput.focus();
+      if (!isIOS()) userInput.focus();
       hideToast();
     } catch (e) {
       hideToast();
@@ -1762,7 +1756,7 @@
       if (isRecording) stopRecording();
     } else {
       hideToast();
-      if (!isCallMode) userInput.focus();
+      if (!isCallMode && !isIOS()) userInput.focus();
     }
   }
 
@@ -1893,21 +1887,23 @@
   }
 
   // ── Event listeners ───────────────────────────────────────────────────────
-  sendBtn.addEventListener('click', sendMessage);
+  sendBtn.addEventListener('click', () => { unlockAudio(); sendMessage(); });
 
   userInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      unlockAudio();
       sendMessage();
     }
   });
 
   micBtn.addEventListener('click', () => {
+    unlockAudio();
     if (isRecording) stopRecording();
     else startRecording();
   });
 
-  ttsBtn.addEventListener('click', toggleTTS);
+  ttsBtn.addEventListener('click', () => { unlockAudio(); toggleTTS(); });
 
   bookBtn.addEventListener('click', makeBook);
   reportBtn.addEventListener('click', makeReport);
@@ -1943,6 +1939,7 @@
       hideAgeModal();
       userInput.focus();
       loadHistoryList();
+      unlockAudio();
       requestMicPermissionEarly();
       await initSession();
     });
@@ -1981,10 +1978,10 @@
     if (e.target === historyViewModal) historyViewModal.classList.add('hidden');
   });
 
-  callBtn.addEventListener('click', startCallMode);
-  hangUpBtn.addEventListener('click', stopCallMode);
-  if (callAcceptBtn) callAcceptBtn.addEventListener('click', acceptIncomingCall);
-  if (callRejectBtn) callRejectBtn.addEventListener('click', rejectIncomingCall);
+  callBtn.addEventListener('click', () => { unlockAudio(); startCallMode(); });
+  hangUpBtn.addEventListener('click', () => { unlockAudio(); stopCallMode(); });
+  if (callAcceptBtn) callAcceptBtn.addEventListener('click', () => { unlockAudio(); acceptIncomingCall(); });
+  if (callRejectBtn) callRejectBtn.addEventListener('click', () => { unlockAudio(); rejectIncomingCall(); });
 
   // ── Boot ──────────────────────────────────────────────────────────────────
   updatePhaseBar(1);
