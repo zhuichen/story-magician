@@ -240,6 +240,8 @@
     return callAudioEl;
   }
 
+  const SILENT_WAV = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAIlYAACJWAAABAAgAZGF0YQoAAAAAAA==';
+
   async function unlockAudio() {
     if (audioUnlocked) return;
     if (!isIOS()) {
@@ -248,11 +250,15 @@
     }
     try {
       const el = initTtsAudio();
-      await el.play();
+      el.src = SILENT_WAV;
+      const p = el.play();
+      await p;
       el.pause();
       el.currentTime = 0;
       audioUnlocked = true;
-    } catch (_) {}
+    } catch (_) {
+      try { ttsAudioEl && ttsAudioEl.pause(); } catch (__) {}
+    }
   }
 
   // ── Voice: TTS ────────────────────────────────────────────────────────────
