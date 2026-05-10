@@ -1955,7 +1955,7 @@
     btn.addEventListener('click', async () => {
       ageGroup = btn.dataset.age || '4-5';
       hideAgeModal();
-      userInput.focus();
+      if (!isIOS()) userInput.focus();
       loadHistoryList();
       unlockAudio();
       requestMicPermissionEarly();
