@@ -127,7 +127,11 @@ router.post('/api/chat', async (req, res) => {
       maxTokens: 800,
       responseFormat: 'json',
     });
-    const parsed = aiService.extractJson(raw) || {};
+    const parsed = aiService.extractJson(raw);
+    if (!parsed) {
+      console.warn('[chat] extractJson 解析失败，完整 raw:', String(raw || ''));
+    }
+    if (!parsed) parsed = {};
 
     const reply = String(parsed.reply || '我再想想哦～接下来呢？').slice(0, 160);
     let action = parsed.action || 'continue';
@@ -150,7 +154,7 @@ router.post('/api/chat', async (req, res) => {
     }
 
     // mini_game 护栏：每个会话最多 1 次；Phase 1 / Phase 4 不允许触发
-    let gameScenario = parsed.gameScenario || '';
+    let gameScenario = (parsed && parsed.gameScenario) || '';
     if (action === 'mini_game') {
       if (session.gamePlayed || session.phase === 1 || session.phase >= 4 || !gameScenario.trim()) {
         action = 'continue';
@@ -259,29 +263,58 @@ router.post('/api/chat-stream', async (req, res) => {
     const messages = prompts.buildMessages(session.history, safeInput, session.phase || 1, session.ageGroup || '4-5');
 
     const extractReply = makeReplyExtractor();
+    let streamedTextLen = 0;
     const raw = await aiService.chatStream(
       messages,
-      { temperature: 0.85, maxTokens: 800 },
+      { temperature: 0.85, maxTokens: 800, responseFormat: 'json' },
       (delta) => {
         const piece = extractReply(delta);
-        if (piece) send('delta', { text: piece });
+        if (piece) {
+          streamedTextLen += piece.length;
+          send('delta', { text: piece });
+        }
       }
     );
 
-    const parsed = aiService.extractJson(raw) || {};
-    // 兜底文案：检测"刚通关"信号，避免回成"我再想想哦"这种空回复
+    let parsed = aiService.extractJson(raw);
+    if (!parsed) {
+      console.warn('[chat-stream] extractJson 首次解析失败，完整 raw:', String(raw || ''));
+      const jsonMatch = String(raw || '').match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try { parsed = JSON.parse(jsonMatch[0]); } catch (e2) {
+          console.warn('[chat-stream] 二次 JSON 解析也失败:', e2.message);
+        }
+      }
+    }
+
     const isPostGame = /^我做到啦|完成啦|通关啦|搭好啦|叠好啦|救出来啦|我成功/.test(safeInput || '');
     const fallbackReply = isPostGame
       ? '哎呀宝贝你真是小英雄！故事里的小伙伴在你帮助下顺利脱险啦～接下来你想让它做什么呀？'
       : '我再想想哦～接下来呢？';
-    let reply = String(parsed.reply || fallbackReply).slice(0, 160);
-    let action = parsed.action || 'continue';
-    let imagePrompt = parsed.imagePrompt || '';
-    const videoPrompt = parsed.videoPrompt || '';
-    const scene = parsed.scene || safeInput;
-    const emotionQuestion = parsed.emotionQuestion || '';
 
-    const nextPhase = parseInt(parsed.phase, 10);
+    let reply;
+    if (parsed && parsed.reply) {
+      reply = String(parsed.reply).slice(0, 160);
+    } else if (raw && String(raw).trim() && !String(raw).trim().startsWith('{')) {
+      reply = String(raw).trim().slice(0, 160);
+      console.warn('[chat-stream] 模型返回了纯文本而非 JSON，将纯文本作为 reply');
+    } else {
+      reply = fallbackReply;
+      console.warn('[chat-stream] JSON 解析全部失败，将使用兜底文案');
+    }
+
+    if (streamedTextLen === 0 && reply) {
+      send('delta', { text: reply });
+      streamedTextLen = reply.length;
+    }
+    let action = (parsed && parsed.action) || 'continue';
+    let imagePrompt = (parsed && parsed.imagePrompt) || '';
+
+    const videoPrompt = (parsed && parsed.videoPrompt) || '';
+    const scene = (parsed && parsed.scene) || safeInput;
+    const emotionQuestion = (parsed && parsed.emotionQuestion) || '';
+
+    const nextPhase = parseInt((parsed && parsed.phase) || 0, 10);
     if (nextPhase >= 1 && nextPhase <= 4) session.phase = nextPhase;
 
     const videoEnabled = process.env.ENABLE_VIDEO === 'true';
@@ -290,26 +323,40 @@ router.post('/api/chat-stream', async (req, res) => {
       imagePrompt = videoPrompt || imagePrompt;
     }
 
+    let gameScenario = (parsed && parsed.gameScenario) || '';
+
     // mini_game 护栏：每个会话最多 1 次；Phase 1 / Phase 4 不允许触发
-    let gameScenario = parsed.gameScenario || '';
-    if (action === 'mini_game') {
-      if (session.gamePlayed || session.phase === 1 || session.phase >= 4 || !gameScenario.trim()) {
-        action = 'continue';
-        gameScenario = '';
+    const shouldTriggerGame = action === 'mini_game' && !session.gamePlayed && session.phase >= 2 && session.phase <= 3 && gameScenario.trim();
+    if (action === 'mini_game' && !shouldTriggerGame) {
+      action = 'continue';
+      gameScenario = '';
+    }
+
+    // 优化1：每一步对话强制生成图片（finalize_book、ask_emotion 和 游戏时除外）
+    if (action !== 'finalize_book' && action !== 'ask_emotion' && action !== 'mini_game') {
+      if (action !== 'generate_image' && action !== 'generate_video') {
+        action = 'generate_image';
+      }
+      if (!imagePrompt.trim()) {
+        imagePrompt = `故事场景：${scene || safeInput}，一个生动的卡通画面`;
       }
     }
 
-    // 强制护栏：在情绪反思至少完成 1 轮之前，禁止 finalize_book
+    // 强制护栏：在情绪反思至少完成 2 轮之前，禁止 finalize_book（最多2个情绪问题）
     // 计数规则：上一轮 AI 是 ask_emotion 且本轮孩子给出了非空回答，emotionRounds += 1
     if (session.lastAction === 'ask_emotion' && safeInput && safeInput.trim()) {
       session.emotionRounds = (session.emotionRounds || 0) + 1;
     }
-    if (action === 'finalize_book' && (session.emotionRounds || 0) < 1) {
+
+    // 优化4：修复制作魔法小书触发条件 - 检测关键词包含"精装小书"、"魔法小书"时触发finalize_book
+    const hasBookKeywords = /精装小书|魔法小书|变成一本.*书|做成.*书|变成.*绘本/i.test(reply);
+    if (hasBookKeywords && action !== 'finalize_book') {
+      action = 'finalize_book';
+    }
+
+    if (action === 'finalize_book' && (session.emotionRounds || 0) < 2) {
       action = 'ask_emotion';
-      // 改写 reply：宣告先做情绪反思
       reply = '你的故事好精彩呀！在画成小书前，魔法师想问问你——故事里它现在心情是怎样的呢？';
-      // 让流式打字机也能补到这段（前面 send 的 delta 是模型那段，可能不一致；
-      //   这里直接发一条 delta 让前端把缺的部分补完）
       send('delta', { text: '\n（先做最后一个情绪小问题哦～）' });
     }
     session.lastAction = action;

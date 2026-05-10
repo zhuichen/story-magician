@@ -674,6 +674,9 @@
     callBar.classList.add('hidden');
     document.body.classList.remove('call-active');
     callBtn.classList.remove('hidden');
+
+    // 优化5：挂断后重置busy状态，确保按钮可用
+    setBusy(false);
   }
 
   async function sendCallMessage(text) {
@@ -710,10 +713,26 @@
 
       scrollBottom();
 
-      if (round >= 5) bookBtn.classList.remove('hidden');
-      if (round >= 3) reportBtn.classList.remove('hidden');
+      bookBtn.classList.remove('hidden');
+      reportBtn.classList.remove('hidden');
+      if (round < 5) {
+        bookBtn.disabled = true;
+        bookBtn.title = '需要至少5轮对话才能制作小书';
+      } else {
+        bookBtn.disabled = false;
+        bookBtn.title = '制作魔法小书';
+      }
+      if (round < 3) {
+        reportBtn.disabled = true;
+        reportBtn.title = '需要至少3轮对话才能生成能力报告';
+      } else {
+        reportBtn.disabled = false;
+        reportBtn.title = '能力报告';
+      }
 
       let pendingGameScenario = '';
+      const replyText = bubble.textContent || '';
+
       if (data.action === 'generate_image' && data.imagePrompt) {
         await handleImageGeneration(data.imagePrompt, data.scene || text);
       } else if (data.action === 'generate_video' && data.videoPrompt) {
@@ -921,10 +940,26 @@
       // 流式输出后再朗读完整文本
       speakText(bubble.textContent || '');
 
-      if (round >= 5) bookBtn.classList.remove('hidden');
       if (round >= 3) reportBtn.classList.remove('hidden');
 
+      bookBtn.classList.remove('hidden');
+      if (round < 5) {
+        bookBtn.disabled = true;
+        bookBtn.title = '需要至少5轮对话才能制作小书';
+      } else {
+        bookBtn.disabled = false;
+        bookBtn.title = '制作魔法小书';
+      }
+      if (round < 3) {
+        reportBtn.disabled = true;
+        reportBtn.title = '需要至少3轮对话才能生成能力报告';
+      } else {
+        reportBtn.disabled = false;
+        reportBtn.title = '能力报告';
+      }
+
       let pendingGameScenario = '';
+
       if (data.action === 'generate_image' && data.imagePrompt) {
         await handleImageGeneration(data.imagePrompt, data.scene || text);
       } else if (data.action === 'generate_video' && data.videoPrompt) {
@@ -1186,6 +1221,11 @@
   // ── Make book ─────────────────────────────────────────────────────────────
   async function makeBook() {
     if (busy) return;
+
+    if (round < 5) {
+      showToast('📖 再聊几句故事，就能制作魔法小书啦～');
+      return;
+    }
 
     if (cachedBook) {
       renderBook(cachedBook);
@@ -1623,8 +1663,22 @@
 
       // Show action buttons based on round count
       round = Math.floor((data.history || []).length / 2);
-      if (round >= 5) bookBtn.classList.remove('hidden');
-      if (round >= 3) reportBtn.classList.remove('hidden');
+      bookBtn.classList.remove('hidden');
+      reportBtn.classList.remove('hidden');
+      if (round < 5) {
+        bookBtn.disabled = true;
+        bookBtn.title = '需要至少5轮对话才能制作小书';
+      } else {
+        bookBtn.disabled = false;
+        bookBtn.title = '制作魔法小书';
+      }
+      if (round < 3) {
+        reportBtn.disabled = true;
+        reportBtn.title = '需要至少3轮对话才能生成能力报告';
+      } else {
+        reportBtn.disabled = false;
+        reportBtn.title = '能力报告';
+      }
 
       // Continuation prompt in chat
       appendAssistantMsg('✨ 故事恢复啦！我们继续冒险吧～有什么想说的？');
