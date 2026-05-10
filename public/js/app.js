@@ -275,12 +275,21 @@
       if (res.ok) {
         const audioBlob = await res.blob();
         const audioUrl = URL.createObjectURL(audioBlob);
-        if (isIOS()) resetTtsAudio();
         const el = initTtsAudio();
+        if (el._prevUrl) URL.revokeObjectURL(el._prevUrl);
         el.src = audioUrl;
+        el._prevUrl = audioUrl;
         await new Promise((resolve) => {
-          el.onended = () => { if (isIOS()) resetTtsAudio(); else { el.src = ''; URL.revokeObjectURL(audioUrl); } resolve(); };
-          el.onerror = () => { if (isIOS()) resetTtsAudio(); else { el.src = ''; URL.revokeObjectURL(audioUrl); } resolve(); };
+          el.onended = () => {
+            el.src = '';
+            if (el._prevUrl) { URL.revokeObjectURL(el._prevUrl); el._prevUrl = null; }
+            resolve();
+          };
+          el.onerror = () => {
+            el.src = '';
+            if (el._prevUrl) { URL.revokeObjectURL(el._prevUrl); el._prevUrl = null; }
+            resolve();
+          };
           el.play().catch(() => resolve());
         });
         return;
